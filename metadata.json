@@ -1,0 +1,6 @@
+{
+  "name": "Union Ledger",
+  "description": "Transparent Financial Management for Unions, NGOs, Committees, Student Organizations, and Community Groups.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
