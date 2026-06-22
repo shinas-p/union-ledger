@@ -4,7 +4,7 @@ let supabaseClient: any = null;
 
 // Default / fallback keys
 const fallbackUrl = 'https://rrujgyjaabbdlchgwfvl.supabase.co';
-const fallbackKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.placeholder';
+const fallbackKey = 'sb_publishable_xvdxJly6rqjZIXF956JbcA_YFwGOjDh';
 
 // Create a static fallback client initially
 supabaseClient = createClient(fallbackUrl, fallbackKey);
