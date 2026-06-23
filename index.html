@@ -3,11 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Union Ledger</title>
+    <title>Union Ledger - Transparent Finance Management for Student Unions</title>
+    <meta name="description" content="Track income, expenses, campaigns, approvals, and audits in one secure and transparent financial reporting platform constructed for student unions and organizations." />
+    <meta name="theme-color" content="#111111" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2953/2953363.png" />
+    <link rel="icon" type="image/png" href="https://cdn-icons-png.flaticon.com/512/2953/2953363.png" />
   </head>
-  <body>
+  <body class="bg-white text-[#111111]">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js')
+            .then((reg) => console.log('Service Worker registered successfully:', reg.scope))
+            .catch((err) => console.error('Service Worker registration failed:', err));
+        });
+      }
+    </script>
   </body>
 </html>
-

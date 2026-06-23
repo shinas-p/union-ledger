@@ -849,15 +849,57 @@ app.get('/api/health', (req, res) => {
 });
 
 // Check Email Existence
-app.get('/api/auth/check-email', (req, res) => {
+app.get('/api/auth/check-email', async (req, res) => {
   const email = req.query.email;
   if (!email || typeof email !== 'string') {
     return res.status(400).json({ error: 'Email parameter is required' });
   }
-  const db = readDB();
+
   const lowerEmail = email.toLowerCase().trim();
-  const exists = Object.values(db.users).some(u => u.email.toLowerCase() === lowerEmail);
-  res.json({ exists });
+  console.log(`[CHECK-EMAIL-BACKEND] Performing duplicate email registration check for: "${lowerEmail}"`);
+
+  let exists = false;
+  let source = "none";
+
+  if (supabaseService.isSupabaseConfigured()) {
+    try {
+      console.log(`[CHECK-EMAIL-BACKEND] Supabase is configured active. Querying Supabase 'profiles' table directly...`);
+      const supabaseUser = await supabaseService.getUserByEmail(lowerEmail);
+      if (supabaseUser) {
+        exists = true;
+        source = "Supabase Profiles";
+        console.log(`[CHECK-EMAIL-BACKEND] Duplicate detected: user found in active Supabase profiles.`);
+      } else {
+        console.log(`[CHECK-EMAIL-BACKEND] No profile found on Supabase for "${lowerEmail}". Checking local cache...`);
+      }
+    } catch (err) {
+      console.error(`[CHECK-EMAIL-BACKEND] Supabase query error (falling back to memory):`, err);
+    }
+  }
+
+  // Double check our local memory/disk cache
+  const db = readDB();
+  const cachedUser = Object.values(db.users).find(u => u.email.toLowerCase() === lowerEmail);
+
+  if (cachedUser) {
+    if (supabaseService.isSupabaseConfigured() && !exists) {
+      // Stale cache detected! The user exists in local db.json but does not exist in Supabase Profiles.
+      console.log(`[CHECK-EMAIL-BACKEND] self-healing event triggered! Email "${lowerEmail}" exists in stale local cache, but was deleted from Supabase. Purging stale local records...`);
+      
+      delete db.users[cachedUser.id];
+      // Clean up organization memberships for deleted user
+      db.members = db.members.filter(m => m.userId !== cachedUser.id);
+      
+      writeDB(db);
+      console.log(`[CHECK-EMAIL-BACKEND] Stale records purged successfully. Re-sync completed.`);
+    } else if (!supabaseService.isSupabaseConfigured()) {
+      exists = true;
+      source = "Local Memory Cache";
+    }
+  }
+
+  console.log(`[CHECK-EMAIL-BACKEND] Final result for "${lowerEmail}": exists=${exists} (source: ${source})`);
+  res.json({ exists, source });
 });
 
 // Register User
@@ -1894,9 +1936,9 @@ app.post('/api/orgs/settings', (req, res) => {
   res.json({ status: 'ok', organization: org });
 });
 
-// Update profile photo/name
+// Update profile photo/name/details
 app.post('/api/auth/profile/update', (req, res) => {
-  const { name, avatarUrl } = req.body;
+  const { name, avatarUrl, phone, bio, preferredCurrency, notificationPreferences } = req.body;
   if (!name) return res.status(400).json({ error: 'Profile name is mandatory.' });
 
   const db = readDB();
@@ -1904,19 +1946,90 @@ app.post('/api/auth/profile/update', (req, res) => {
   if (!auth) return res.status(401).json({ error: 'Not authorized' });
 
   const profile = db.users[auth.user.id];
-  profile.name = name;
-  if (avatarUrl) profile.avatarUrl = avatarUrl;
+  const oldName = profile.name;
+  const oldAvatar = profile.avatarUrl;
 
-  // Update their name in public member registries for live audit accuracy
+  profile.name = name;
+  if (avatarUrl !== undefined) profile.avatarUrl = avatarUrl;
+  if (phone !== undefined) profile.phone = phone;
+  if (bio !== undefined) profile.bio = bio;
+  if (preferredCurrency !== undefined) profile.preferredCurrency = preferredCurrency;
+  if (notificationPreferences !== undefined) profile.notificationPreferences = notificationPreferences;
+
+  // Update their name/avatar in public member registries for live audit accuracy
   db.members.forEach(m => {
     if (m.userId === auth.user.id) {
       m.userName = name;
-      if (avatarUrl) m.userAvatarUrl = avatarUrl;
+      if (avatarUrl !== undefined) m.userAvatarUrl = avatarUrl;
+    }
+  });
+
+  // Track user organizations to register audit logs in all of them
+  const userOrgs = db.members.filter(m => m.userId === auth.user.id).map(m => m.orgId);
+  userOrgs.forEach(orgId => {
+    // 6. Audit Logging: Profile Updated
+    db.audits.unshift({
+      id: 'au-' + uuid(),
+      orgId: orgId,
+      userId: auth.user.id,
+      userName: name,
+      action: 'role_changed',
+      details: `Profile updated: Edited credentials. Phone: "${phone || 'none'}", Currency: "${preferredCurrency || 'none'}".`,
+      timestamp: new Date().toISOString()
+    });
+
+    // 6. Audit Logging: Avatar Changed
+    if (avatarUrl !== oldAvatar) {
+      db.audits.unshift({
+        id: 'au-' + uuid(),
+        orgId: orgId,
+        userId: auth.user.id,
+        userName: name,
+        action: 'role_changed',
+        details: `Profile avatar updated. Path synced.`,
+        timestamp: new Date().toISOString()
+      });
     }
   });
 
   writeDB(db);
   res.json({ status: 'ok', user: profile });
+});
+
+// Change Password endpoint
+app.post('/api/auth/password/change', (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Current password and new password are required.' });
+  }
+
+  const db = readDB();
+  const auth = getAuthUser(req, db);
+  if (!auth) return res.status(401).json({ error: 'Not authorized' });
+
+  const profile = db.users[auth.user.id];
+  if (profile.passwordHash !== currentPassword) {
+    return res.status(400).json({ error: 'Current password challenge failed.' });
+  }
+
+  profile.passwordHash = newPassword;
+
+  // 6. Audit Logging: Password Changed
+  const userOrgs = db.members.filter(m => m.userId === auth.user.id).map(m => m.orgId);
+  userOrgs.forEach(orgId => {
+    db.audits.unshift({
+      id: 'au-' + uuid(),
+      orgId: orgId,
+      userId: auth.user.id,
+      userName: profile.name,
+      action: 'role_changed',
+      details: 'Password changed successfully.',
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  writeDB(db);
+  res.json({ status: 'ok', message: 'Password changed successfully' });
 });
 
 // Account Deletion
@@ -1926,8 +2039,8 @@ app.post('/api/auth/delete', (req, res) => {
     return res.status(400).json({ error: 'Please submit password and typed confirmation text.' });
   }
 
-  if (textConfirmation !== 'DELETE ACCOUNT') {
-    return res.status(400).json({ error: 'To confirm system deletion, you must type "DELETE ACCOUNT" exactly.' });
+  if (textConfirmation !== 'DELETE MY ACCOUNT') {
+    return res.status(400).json({ error: 'To confirm system deletion, you must type "DELETE MY ACCOUNT" exactly.' });
   }
 
   const db = readDB();
@@ -1943,6 +2056,50 @@ app.post('/api/auth/delete', (req, res) => {
   const userId = originalUser.id;
   const userName = originalUser.name;
   const userEmail = originalUser.email;
+
+  // 6. Audit Logging: Account deletion requested
+  const userOrgs = db.members.filter(m => m.userId === userId).map(m => m.orgId);
+  userOrgs.forEach(orgId => {
+    db.audits.unshift({
+      id: 'au-' + uuid(),
+      orgId: orgId,
+      userId: userId,
+      userName: userName,
+      action: 'role_changed',
+      details: 'Account deletion requested with verification challenge.',
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  // 5. Last Admin block check
+  const userAdminOrgs = db.members.filter(m => m.userId === userId && m.role === 'Admin');
+  const blockedOrgs: string[] = [];
+
+  for (const membership of userAdminOrgs) {
+    const otherAdminsInOrg = db.members.filter(m => m.orgId === membership.orgId && m.userId !== userId && m.role === 'Admin');
+    if (otherAdminsInOrg.length === 0) {
+      const orgName = db.organizations[membership.orgId]?.name || membership.orgId;
+      blockedOrgs.push(orgName);
+
+      // 6. Audit Logging: Deletion blocked because user is last admin
+      db.audits.unshift({
+        id: 'au-' + uuid(),
+        orgId: membership.orgId,
+        userId: userId,
+        userName: userName,
+        action: 'role_changed',
+        details: `Deletion blocked: last Admin of organization "${orgName}".`,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  if (blockedOrgs.length > 0) {
+    writeDB(db);
+    return res.status(400).json({
+      error: `You are the last Admin of one or more organizations (${blockedOrgs.join(', ')}). Transfer admin ownership or delete/archive the organization before deleting your account.`
+    });
+  }
 
   // "Do not delete financial history. Replace references with Deleted User"
   // Keep audit logs intact by replacing names
@@ -1961,19 +2118,18 @@ app.post('/api/auth/delete', (req, res) => {
     }
   });
 
-  // Notify active org of exit
-  const activeOrgId = originalUser.lastActiveOrgId;
-  if (activeOrgId) {
+  // 6. Audit Logging: Account deleted
+  userOrgs.forEach(orgId => {
     db.audits.unshift({
       id: 'au-' + uuid(),
-      orgId: activeOrgId,
+      orgId: orgId,
       userId: 'system',
       userName: 'System Ledger',
       action: 'role_changed',
       details: `User account associated with ${userName} (${userEmail}) was permanently deleted. Workspace records scrubbed.`,
       timestamp: new Date().toISOString()
     });
-  }
+  });
 
   // Remove memberships
   db.members = db.members.filter(m => m.userId !== userId);

@@ -38,11 +38,13 @@ import { Campaigns } from './components/Campaigns';
 import { Members } from './components/Members';
 import { Audits } from './components/Audits';
 import { Settings as SettingsComponent } from './components/Settings';
+import { Profile } from './components/Profile';
 import { PublicTransparency } from './components/PublicTransparency';
 import { NotificationCenter } from './components/NotificationCenter';
 import { AuthCallback } from './components/AuthCallback';
 import { EmailConfirmed } from './components/EmailConfirmed';
 import { ResetPassword } from './components/ResetPassword';
+import { LandingPage } from './components/LandingPage';
 import { UserProfile, Organization, UserRole } from './types';
 import { supabase, configLoadedPromise } from './lib/supabase';
 
@@ -55,7 +57,7 @@ export default function App() {
   const [status, setStatus] = useState<'Active' | 'Suspended'>('Active');
 
   // Navigation
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'campaigns' | 'members' | 'audits' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'campaigns' | 'members' | 'audits' | 'settings' | 'profile'>('dashboard');
   const [publicPortalSlug, setPublicPortalSlug] = useState<string | null>(null);
   const [currentPath, setCurrentPath] = useState(window.location.pathname);
 
@@ -67,6 +69,16 @@ export default function App() {
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+
+  useEffect(() => {
+    if (currentPath === '/profile') {
+      setActiveTab('profile');
+    } else if (currentPath === '/dashboard' || currentPath === '/') {
+      if (activeTab === 'profile') {
+        setActiveTab('dashboard');
+      }
+    }
+  }, [currentPath]);
 
   const navigateTo = (path: string) => {
     window.history.pushState(null, '', path);
@@ -503,8 +515,105 @@ export default function App() {
     );
   }
 
+  // -------------------------------------------------------------------
+  // PATH-BASED ROUTING FOR LANDING, AUTH, AND DASHING
+  // -------------------------------------------------------------------
+  if (currentPath === '/') {
+    return (
+      <LandingPage 
+        onNavigate={navigateTo} 
+        isLoggedIn={!!token} 
+        onOpenJoinModal={() => {
+          if (token) {
+            setIsJoinOrgOpen(true);
+            navigateTo('/dashboard');
+          } else {
+            navigateTo('/register');
+          }
+        }}
+      />
+    );
+  }
+
+  if (currentPath === '/login') {
+    if (token) {
+      setTimeout(() => navigateTo('/dashboard'), 50);
+      return (
+        <div className="min-h-screen bg-brand-bg text-white flex flex-col items-center justify-center p-8">
+          <span className="w-10 h-10 border-4 border-brand border-t-white rounded-full animate-spin mb-4" />
+          <p className="font-mono text-xs tracking-widest text-[#A8CC00] uppercase font-bold">Redirecting to active workspace...</p>
+        </div>
+      );
+    }
+    return (
+      <Auth 
+        onLoginSuccess={handleLoginSuccess} 
+        initialView="login" 
+        onBackToLanding={() => navigateTo('/')} 
+      />
+    );
+  }
+
+  if (currentPath === '/register') {
+    if (token) {
+      setTimeout(() => navigateTo('/dashboard'), 50);
+      return (
+        <div className="min-h-screen bg-brand-bg text-white flex flex-col items-center justify-center p-8">
+          <span className="w-10 h-10 border-4 border-brand border-t-white rounded-full animate-spin mb-4" />
+          <p className="font-mono text-xs tracking-widest text-[#A8CC00] uppercase font-bold">Redirecting to active workspace...</p>
+        </div>
+      );
+    }
+    return (
+      <Auth 
+        onLoginSuccess={handleLoginSuccess} 
+        initialView="register" 
+        onBackToLanding={() => navigateTo('/')} 
+      />
+    );
+  }
+
+  if (currentPath === '/join') {
+    if (token) {
+      setIsJoinOrgOpen(true);
+      setTimeout(() => navigateTo('/dashboard'), 50);
+      return (
+        <div className="min-h-screen bg-brand-bg text-white flex flex-col items-center justify-center p-8">
+          <span className="w-10 h-10 border-4 border-brand border-t-white rounded-full animate-spin mb-4" />
+          <p className="font-mono text-xs tracking-widest text-[#A8CC00] uppercase font-bold">Entering join clearance...</p>
+        </div>
+      );
+    }
+    return (
+      <Auth 
+        onLoginSuccess={handleLoginSuccess} 
+        initialView="register" 
+        onBackToLanding={() => navigateTo('/')} 
+      />
+    );
+  }
+
+  if (currentPath === '/dashboard' || currentPath === '/profile') {
+    if (!token) {
+      setTimeout(() => navigateTo('/login'), 50);
+      return (
+        <div className="min-h-screen bg-brand-bg text-white flex flex-col items-center justify-center p-8">
+          <span className="w-10 h-10 border-4 border-brand border-t-white rounded-full animate-spin mb-4" />
+          <p className="font-mono text-xs tracking-widest text-[#A8CC00] uppercase font-bold">Sign-in required. Redirecting...</p>
+        </div>
+      );
+    }
+  }
+
+  // Fallback for deep index routes without token
   if (!token) {
-    return <Auth onLoginSuccess={handleLoginSuccess} />;
+    return (
+      <LandingPage 
+        onNavigate={navigateTo} 
+        isLoggedIn={false} 
+        onOpenJoinModal={() => navigateTo('/register')}
+      />
+    );
   }
 
   // Sidebar components links list
@@ -631,21 +740,29 @@ export default function App() {
           {/* Custom persistent Notification bells */}
           {token && (
             <NotificationCenter token={token} refreshToggle={refreshToggle} />
-          )}
-
-          {/* Profile details + Logouts */}
+          )}          {/* Profile details + Logouts */}
           {user && (
             <div className="flex items-center gap-2 border-l border-brand-secondary pl-3" id="header-user-badge">
-              <img
-                src={user.avatarUrl || `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=80`}
-                alt="Profile avatar"
-                referrerPolicy="no-referrer"
-                className="w-8 h-8 rounded-full border border-zinc-800 bg-zinc-800"
-              />
-              <div className="hidden md:block text-left">
-                <span className="text-white text-xs font-semibold block leading-tight">{user.name}</span>
-                <span className="text-zinc-500 font-mono text-[9px] block leading-none">{user.email}</span>
-              </div>
+              <button
+                id="header-profile-menu-trigger"
+                onClick={() => {
+                  setActiveTab('profile');
+                  navigateTo('/profile');
+                }}
+                className="flex items-center gap-2 hover:bg-brand-secondary/50 p-1 rounded-xl transition-all text-left cursor-pointer border border-transparent hover:border-zinc-800"
+                title="View your Profile & Preferences"
+              >
+                <img
+                  src={user.avatarUrl || `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=80`}
+                  alt="Profile avatar"
+                  referrerPolicy="no-referrer"
+                  className="w-8 h-8 rounded-full border border-zinc-800 bg-zinc-800 object-cover"
+                />
+                <div className="hidden md:block text-left">
+                  <span className="text-white text-xs font-semibold block leading-tight">{user.name}</span>
+                  <span className="text-[#D6FF20] font-mono text-[9px] block leading-none mt-0.5 font-bold">Manage Profile</span>
+                </div>
+              </button>
               
               <button
                 id="do-logout-action"
@@ -681,7 +798,10 @@ export default function App() {
                   <button
                     id={`nav-${link.id}`}
                     key={link.id}
-                    onClick={() => setActiveTab(link.id as any)}
+                    onClick={() => {
+                      setActiveTab(link.id as any);
+                      navigateTo('/dashboard');
+                    }}
                     className={`w-full flex items-center gap-2.5 py-2 px-3 rounded-md text-xs font-semibold uppercase tracking-wider transition-all text-left cursor-pointer ${
                       isActive 
                         ? 'bg-[#D6FF20]/10 text-[#D6FF20] font-bold border border-[#D6FF20]/20' 
@@ -697,22 +817,64 @@ export default function App() {
             </nav>
           </div>
 
-          {/* Sidebar Footer details */}
-          <div className="hidden md:block p-3.5 bg-[#0F1115]/50 rounded-lg border border-white/5 mt-6 text-left space-y-1">
-            <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold text-[#D6FF20]">
-              <ShieldCheck size={11} />
-              <span>STRICT RLS COMPLIANT</span>
+          {/* Sidebar Footer profile area & RLS metrics */}
+          <div className="hidden md:block mt-6 space-y-3">
+            {user && (
+              <button
+                id="sidebar-footer-profile-btn"
+                onClick={() => {
+                  setActiveTab('profile');
+                  navigateTo('/profile');
+                }}
+                className={`w-full p-2.5 bg-[#0F1115]/80 hover:bg-[#0F1115]/90 hover:border-zinc-750 rounded-xl border transition-all text-left flex items-center gap-2.5 cursor-pointer ${activeTab === 'profile' ? 'border-[#D6FF20]' : 'border-white/5'}`}
+              >
+                <img
+                  src={user.avatarUrl || `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=80`}
+                  alt="avatar"
+                  referrerPolicy="no-referrer"
+                  className="w-7 h-7 rounded-full border border-zinc-800 object-cover"
+                />
+                <div className="flex-1 min-w-0">
+                  <span className="text-xs text-white font-bold block truncate leading-tight">{user.name}</span>
+                  <span className="text-[8.5px] font-mono text-zinc-400 block truncate uppercase tracking-widest leading-none mt-1 font-bold">Clearance: {role}</span>
+                </div>
+              </button>
+            )}
+
+            <div className="p-3.5 bg-[#0F1115]/55 rounded-lg border border-white/5 text-left space-y-1">
+              <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold text-[#D6FF20]">
+                <ShieldCheck size={11} />
+                <span>STRICT RLS COMPLIANT</span>
+              </div>
+              <p className="text-[9px] text-zinc-500 leading-normal font-mono">
+                Workspace isolations active. Operations timestamped cryptographically.
+              </p>
             </div>
-            <p className="text-[9px] text-zinc-500 leading-normal font-mono">
-              Workspace isolations active. Operations timestamped cryptographically.
-            </p>
           </div>
         </aside>
 
         {/* Content viewport area */}
         <main className="flex-1 bg-[#0F1115] flex flex-col overflow-hidden" id="main-content-viewport">
           <div className="flex-1 p-4 md:p-6 overflow-y-auto">
-            {!currentOrg ? (
+            {activeTab === 'profile' ? (
+              <div className="animate-fade-in text-left">
+                <Profile
+                  token={token}
+                  user={user!}
+                  orgs={orgs}
+                  onRefresh={() => setRefreshToggle(p => !p)}
+                  onLogout={handleLogout}
+                  onNavigate={(tab) => {
+                    setActiveTab(tab);
+                    if (tab === 'profile') {
+                      navigateTo('/profile');
+                    } else {
+                      navigateTo('/dashboard');
+                    }
+                  }}
+                />
+              </div>
+            ) : !currentOrg ? (
               <div className="h-full flex flex-col items-center justify-center p-8 text-center bg-[#161A20] border border-white/5 rounded-lg">
                 <Layers size={40} className="text-[#D6FF20] mb-3 animate-pulse" />
                 <h3 className="text-base font-bold text-white leading-tight">Registry Context Missing</h3>

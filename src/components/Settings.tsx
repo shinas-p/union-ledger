@@ -182,60 +182,35 @@ export function Settings({
         {/* Left column (8 span) : User Profiles + Organisation Config */}
         <div className="lg:col-span-8 space-y-6">
           
-          {/* Section: Profile Settings */}
-          <div className="bg-brand-surface border border-brand-secondary p-6 rounded-2xl" id="profile-settings-card">
+          {/* Section: Profile Settings Shortcut Banner */}
+          <div className="bg-brand-surface border border-[#D6FF20]/25 p-6 rounded-2xl" id="profile-settings-card">
             <h3 className="text-xs font-bold font-mono text-[#D6FF20] uppercase tracking-wider mb-2 flex items-center gap-2">
               <User size={14} />
-              <span>User account Profile</span>
+              <span>User Account Profile Preferences</span>
             </h3>
             
             <p className="text-zinc-500 text-[11px] mb-4">
-              Alter your name representation, upload avatar graphics, or verify central registration dates.
+              Your central profile details, custom notification toggles, storage-backed avatar images, security options, and account safety deletion tools are now consolidated in your personal Account Cabinet.
             </p>
 
-            {profileSuccess && (
-              <div id="profile-success-alert" className="mb-4 bg-emerald-950/40 border border-emerald-900 text-emerald-200 text-xs p-3 rounded-lg flex items-center gap-1.5 animate-pulse">
-                <Check size={14} />
-                <span>{profileSuccess}</span>
+            <div className="p-4 bg-[#D6FF20]/5 border border-[#D6FF20]/15 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+              <div>
+                <span className="text-xs text-white font-bold block">Consolidated Credential Management</span>
+                <span className="text-[10px] text-zinc-400 font-mono block mt-1">Manage private names, passwords, and currency indicators safely.</span>
               </div>
-            )}
-
-            <form onSubmit={handleProfileSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest block">Account Full Name</label>
-                  <input
-                    type="text"
-                    required
-                    value={profileName}
-                    onChange={(e) => setProfileName(e.target.value)}
-                    className="w-full bg-brand-bg border border-zinc-800 focus:border-brand rounded-lg p-2.5 text-xs text-white focus:outline-none"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest block">Avatar image URL (Unsplash/Gravatar)</label>
-                  <input
-                    type="url"
-                    value={profileAvatar}
-                    onChange={(e) => setProfileAvatar(e.target.value)}
-                    placeholder="https://images.unsplash.com/photo-..."
-                    className="w-full bg-brand-bg border border-zinc-800 focus:border-brand rounded-lg p-2.5 text-xs font-mono text-white focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              <div className="flex justify-between items-center bg-brand-bg/40 border border-zinc-900 p-3 rounded-xl">
-                <span className="text-[10px] font-mono text-zinc-500">Registered joining date: {new Date(user.joinedAt).toLocaleDateString()}</span>
-                <button
-                  id="profile-save-btn"
-                  type="submit"
-                  className="px-4 py-2 bg-brand hover:bg-brand-hover text-brand-bg font-bold text-xs rounded-lg cursor-pointer transition-all"
-                >
-                  Save Profile details
-                </button>
-              </div>
-            </form>
+              <button
+                id="go-to-profile-shortcut"
+                type="button"
+                onClick={() => {
+                  window.history.pushState(null, '', '/profile');
+                  window.dispatchEvent(new Event('popstate'));
+                }}
+                className="px-4 py-2 bg-[#D6FF20] hover:bg-[#C5E800] text-black font-extrabold text-xs uppercase rounded-lg cursor-pointer transition-colors"
+                title="Open personal Profile details"
+              >
+                Go to Profile Account Page
+              </button>
+            </div>
           </div>
 
           {/* Section: Organization parameters (Visible to ADMIN ONLY) */}

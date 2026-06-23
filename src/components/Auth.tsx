@@ -10,10 +10,30 @@ import { supabase, configLoadedPromise } from '../lib/supabase';
 
 interface AuthProps {
   onLoginSuccess: (token: string, user: UserProfile, role: UserRole) => void;
+  initialView?: 'login' | 'register' | 'forgot' | 'reset';
+  onBackToLanding?: () => void;
 }
 
-export function Auth({ onLoginSuccess }: AuthProps) {
-  const [view, setView] = useState<'login' | 'register' | 'forgot' | 'reset'>('login');
+export function Auth({ onLoginSuccess, initialView = 'login', onBackToLanding }: AuthProps) {
+  const [view, setView] = useState<'login' | 'register' | 'forgot' | 'reset'>(initialView);
+
+  useEffect(() => {
+    setView(initialView);
+  }, [initialView]);
+
+  // Task 3: Clear any stale auth/profile cache on signup page load
+  useEffect(() => {
+    if (view === 'register') {
+      console.log('[AUTH] Signup view loaded. Purging local tokens and logging out stale Supabase Auth sessions...');
+      localStorage.removeItem('ul_token');
+      sessionStorage.removeItem('ul_token');
+      supabase.auth.signOut().then(() => {
+        console.log('[AUTH] Stale sessions cleared successfully via Supabase signOut.');
+      }).catch((err) => {
+        console.warn('[AUTH] Error during signout clean phase:', err);
+      });
+    }
+  }, [view]);
   
   // Form inputs
   const [email, setEmail] = useState('');
@@ -141,8 +161,14 @@ export function Auth({ onLoginSuccess }: AuthProps) {
         const checkRes = await fetch(`/api/auth/check-email?email=${encodeURIComponent(cleanEmail)}`);
         if (checkRes.ok) {
           const checkData = await checkRes.json();
+          
+          console.log(`[SIGNUP-DUPLICATE-CHECK-METRICS]:`);
+          console.log(` - Frontend Cache Match: false (stale local lists not present)`);
+          console.log(` - Backend Duplicate Verified: ${checkData.exists}`);
+          console.log(` - Source Identifier: ${checkData.source || 'none'}`);
+
           if (checkData.exists) {
-            console.warn(`[SIGNUP] Duplicate request found on backend ledger for "${cleanEmail}".`);
+            console.warn(`[SIGNUP] Duplicate found. Detected from backend source: ${checkData.source || 'unknown'}`);
             setError('This email is already registered. Please sign in.');
             setLoading(false);
             return;
@@ -160,10 +186,11 @@ export function Auth({ onLoginSuccess }: AuthProps) {
         });
 
         // Debugging logs requested to inspect exact Supabase authentication responses
-        console.log('signup data', data);
-        console.log('signup error', registerErr);
+        console.log('[SIGNUP] signUp response data:', data);
+        console.log('[SIGNUP] signUp response error:', registerErr);
 
         if (registerErr) {
+          console.warn(`[SIGNUP-DUPLICATE-CHECK-METRICS] Registration exception: ${registerErr.message}`);
           console.warn(`[SIGNUP] Failed registration for "${cleanEmail}": ${registerErr.message}`);
           throw registerErr;
         }
@@ -172,6 +199,7 @@ export function Auth({ onLoginSuccess }: AuthProps) {
         // in Supabase (which silently returns success with an empty identities list)
         const isExistingUser = data.user && data.user.identities && data.user.identities.length === 0;
         if (isExistingUser) {
+          console.warn(`[SIGNUP-DUPLICATE-CHECK-METRICS] Duplicate detected from Supabase Auth silent identities validation (already registered).`);
           console.warn(`[SIGNUP] Email "${cleanEmail}" is already registered (silently detected via identities check).`);
           setError('This email is already registered. Please sign in.');
           setLoading(false);
@@ -351,6 +379,14 @@ export function Auth({ onLoginSuccess }: AuthProps) {
           <div className="absolute top-0 right-0 w-64 h-64 bg-brand/5 rounded-full blur-3xl pointer-events-none" />
           
           <div>
+            {onBackToLanding && (
+              <button 
+                onClick={onBackToLanding}
+                className="flex items-center gap-1.5 text-zinc-400 hover:text-white text-xs font-mono mb-6 transition-colors bg-brand-surface border border-brand-secondary/40 px-3 py-1.5 rounded-lg cursor-pointer hover:bg-brand-bg select-none"
+              >
+                <ArrowLeft size={12} /> BACK TO LANDING
+              </button>
+            )}
             <div className="flex items-center gap-2 mb-6">
               <div className="w-10 h-10 bg-brand text-brand-bg flex items-center justify-center rounded-lg font-bold font-mono text-xl shadow-lg shadow-brand/20">
                 U

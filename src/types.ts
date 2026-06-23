@@ -26,6 +26,15 @@ export interface UserProfile {
   avatarUrl?: string;
   lastActiveOrgId?: string;
   joinedAt: string;
+  phone?: string;
+  bio?: string;
+  preferredCurrency?: string;
+  notificationPreferences?: {
+    transactionEvents: boolean;
+    memberActivities: boolean;
+    campaignUpdates: boolean;
+    whatsappAlerts: boolean;
+  };
 }
 
 export interface Organization {
