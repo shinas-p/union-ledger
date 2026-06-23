@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Bell, BellRing, CheckCheck, Clock, ShieldCheck, CreditCard, UserPlus, Coins, Inbox } from 'lucide-react';
+import { Bell, BellRing, CheckCheck, Clock, ShieldCheck, CreditCard, UserPlus, Coins, Inbox, Trash2, AlertTriangle } from 'lucide-react';
 import { OrganizationNotification } from '../types';
 
 interface NotificationCenterProps {
@@ -89,6 +89,13 @@ export function NotificationCenter({ token, refreshToggle }: NotificationCenterP
         return <Coins className="text-brand h-4 w-4 animate-bounce" />;
       case 'MemberJoined':
         return <UserPlus className="text-blue-400 h-4 w-4" />;
+      case 'TransactionDeleteRequested':
+        return <AlertTriangle className="text-amber-400 h-4 w-4" />;
+      case 'TransactionDeleteApproved':
+      case 'TransactionDeleted':
+        return <Trash2 className="text-rose-400 h-4 w-4" />;
+      case 'TransactionDeleteRejected':
+        return <Inbox className="text-zinc-500 h-4 w-4" />;
       default:
         return <Bell className="text-zinc-400 h-4 w-4" />;
     }

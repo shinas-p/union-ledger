@@ -292,7 +292,18 @@ async function persistToSupabase(newDb: DatabaseSchema) {
           rejected_by: rejectorExists ? toSupabaseId(t.rejectedByUserId) : null,
           approval_date: t.approvalDate || null,
           rejection_date: t.rejection_date || null,
-          created_at: t.createdAt
+          created_at: t.createdAt,
+
+          deleted_at: t.deletedAt || null,
+          deleted_by: t.deletedBy ? toSupabaseId(t.deletedBy) : null,
+          deletion_reason: t.deletionReason || null,
+          deletion_status: t.deletionStatus || 'none',
+          deletion_requested_by: t.deletionRequestedBy ? toSupabaseId(t.deletionRequestedBy) : null,
+          deletion_requested_at: t.deletionRequestedAt || null,
+          deletion_approved_by: t.deletionApprovedBy ? toSupabaseId(t.deletionApprovedBy) : null,
+          deletion_approved_at: t.deletionApprovedAt || null,
+          deletion_rejected_by: t.deletionRejectedBy ? toSupabaseId(t.deletionRejectedBy) : null,
+          deletion_rejected_at: t.deletionRejectedAt || null
         };
       });
     if (transactionsPayload.length > 0) {
@@ -336,7 +347,13 @@ async function persistToSupabase(newDb: DatabaseSchema) {
           title: n.title,
           message: n.message,
           is_read: n.isRead,
-          created_at: n.createdAt
+          created_at: n.createdAt,
+
+          target_user_id: n.targetUserId ? toSupabaseId(n.targetUserId) : null,
+          target_role: n.targetRole || null,
+          visibility_scope: n.visibilityScope || null,
+          related_entity_type: n.relatedEntityType || null,
+          related_entity_id: n.relatedEntityId ? toSupabaseId(n.relatedEntityId) : null
         };
       });
     if (notificationsPayload.length > 0) {
@@ -508,7 +525,18 @@ async function loadDatabaseFromSupabase() {
         rejectedByUserName: rejector?.name || undefined,
         approvalDate: t.approval_date || undefined,
         rejectionDate: t.rejection_date || undefined,
-        createdAt: t.created_at
+        createdAt: t.created_at,
+
+        deletedAt: t.deleted_at || undefined,
+        deletedBy: fromSupabaseId(t.deleted_by) || undefined,
+        deletionReason: t.deletion_reason || undefined,
+        deletionStatus: t.deletion_status || 'none',
+        deletionRequestedBy: fromSupabaseId(t.deletion_requested_by) || undefined,
+        deletionRequestedAt: t.deletion_requested_at || undefined,
+        deletionApprovedBy: fromSupabaseId(t.deletion_approved_by) || undefined,
+        deletionApprovedAt: t.deletion_approved_at || undefined,
+        deletionRejectedBy: fromSupabaseId(t.deletion_rejected_by) || undefined,
+        deletionRejectedAt: t.deletion_rejected_at || undefined
       };
     });
 
@@ -535,7 +563,13 @@ async function loadDatabaseFromSupabase() {
         title: n.title,
         message: n.message,
         isRead: n.is_read || false,
-        createdAt: n.created_at
+        createdAt: n.created_at,
+
+        targetUserId: fromSupabaseId(n.target_user_id) || undefined,
+        targetRole: n.target_role || undefined,
+        visibilityScope: n.visibility_scope || undefined,
+        relatedEntityType: n.related_entity_type || undefined,
+        relatedEntityId: fromSupabaseId(n.related_entity_id) || n.related_entity_id || undefined
       };
     });
 
@@ -1262,7 +1296,12 @@ app.post('/api/orgs/join', (req, res) => {
     title: 'New Workspace Member',
     message: `${auth.user.name} joined as ${targetRole} via code "${cleanCode}".`,
     isRead: false,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    targetUserId: null,
+    targetRole: 'Admin',
+    visibilityScope: 'all_admins',
+    relatedEntityType: 'member',
+    relatedEntityId: newMember.id
   });
 
   writeDB(db);
@@ -1447,7 +1486,12 @@ app.post('/api/members/update', (req, res) => {
       title: 'Workspace Status Update',
       message: `Your membership configuration has been modified: ${logChanges.join(', ')}.`,
       isRead: false,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      targetUserId: targetMember.userId,
+      targetRole: null,
+      visibilityScope: 'user_specific',
+      relatedEntityType: 'member',
+      relatedEntityId: targetMember.id
     });
   }
 
@@ -1686,6 +1730,264 @@ app.post('/api/transactions/approve', (req, res) => {
   res.json({ status: 'ok', transaction: targetTx });
 });
 
+// Request Transaction Deletion
+app.post('/api/transactions/request-delete', (req, res) => {
+  try {
+    const { transactionId, reason } = req.body;
+    if (!transactionId || !reason) {
+      return res.status(400).json({ error: 'Provide transactionId and direct deletion request credentials / reason.' });
+    }
+
+    const db = readDB();
+    const auth = getAuthUser(req, db);
+    if (!auth) return res.status(401).json({ error: 'Not authorized.' });
+
+    if (auth.role !== 'Admin' && auth.role !== 'Treasurer') {
+      return res.status(403).json({ error: 'Only Admins and Treasurers hold permission to request transaction deletions.' });
+    }
+
+    const txIdx = db.transactions.findIndex(t => t.id === transactionId && t.orgId === auth.user.lastActiveOrgId);
+    if (txIdx === -1) {
+      return res.status(404).json({ error: 'Transaction record not found.' });
+    }
+
+    const targetTx = db.transactions[txIdx];
+
+    targetTx.deletionStatus = 'requested';
+    targetTx.deletionReason = reason;
+    targetTx.deletionRequestedBy = auth.user.id;
+    targetTx.deletionRequestedAt = new Date().toISOString();
+
+    // Audit log (action: transaction.delete_requested)
+    db.audits.unshift({
+      id: 'au-' + uuid(),
+      orgId: auth.user.lastActiveOrgId!,
+      userId: auth.user.id,
+      userName: auth.user.name,
+      action: 'transaction.delete_requested',
+      details: `Requested deletion of ${targetTx.type.toLowerCase()} "${targetTx.title}" of India currency ${targetTx.amount}. Reason: ${reason}`,
+      timestamp: new Date().toISOString()
+    });
+
+    // Notification to Admins
+    db.notifications.unshift({
+      id: 'not-' + uuid(),
+      orgId: auth.user.lastActiveOrgId!,
+      userId: 'user-admin',
+      type: 'TransactionDeleteRequested',
+      title: 'Transaction Deletion Requested',
+      message: `${auth.user.name} (Treasurer) requested deletion of "${targetTx.title}" for India currency ${targetTx.amount}. Reason: ${reason}.`,
+      isRead: false,
+      createdAt: new Date().toISOString(),
+      targetUserId: null,
+      targetRole: 'Admin',
+      visibilityScope: 'all_admins',
+      relatedEntityType: 'transaction',
+      relatedEntityId: targetTx.id
+    });
+
+    writeDB(db);
+    res.json({ status: 'ok', transaction: targetTx });
+  } catch (err: any) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Approve Transaction Deletion Request
+app.post('/api/transactions/approve-delete', (req, res) => {
+  try {
+    const { transactionId } = req.body;
+    if (!transactionId) {
+      return res.status(400).json({ error: 'Provide transactionId.' });
+    }
+
+    const db = readDB();
+    const auth = getAuthUser(req, db);
+    if (!auth) return res.status(401).json({ error: 'Not authorized.' });
+
+    if (auth.role !== 'Admin') {
+      return res.status(403).json({ error: 'Only admins can approve delete requests.' });
+    }
+
+    const txIdx = db.transactions.findIndex(t => t.id === transactionId && t.orgId === auth.user.lastActiveOrgId);
+    if (txIdx === -1) {
+      return res.status(404).json({ error: 'Transaction record not found.' });
+    }
+
+    const targetTx = db.transactions[txIdx];
+
+    targetTx.deletedAt = new Date().toISOString();
+    targetTx.deletedBy = auth.user.id;
+    targetTx.deletionStatus = 'approved';
+    targetTx.deletionApprovedBy = auth.user.id;
+    targetTx.deletionApprovedAt = new Date().toISOString();
+
+    // Audit log (action: transaction.delete_approved)
+    db.audits.unshift({
+      id: 'au-' + uuid(),
+      orgId: auth.user.lastActiveOrgId!,
+      userId: auth.user.id,
+      userName: auth.user.name,
+      action: 'transaction.delete_approved',
+      details: `Approved deletion of ${targetTx.type.toLowerCase()} "${targetTx.title}" of India currency ${targetTx.amount}.`,
+      timestamp: new Date().toISOString()
+    });
+
+    // Notification to requester (Treasurer)
+    const notifyUserId = targetTx.deletionRequestedBy || targetTx.createdByUserId;
+    db.notifications.unshift({
+      id: 'not-' + uuid(),
+      orgId: auth.user.lastActiveOrgId!,
+      userId: notifyUserId,
+      type: 'TransactionDeleteApproved',
+      title: 'Transaction Deletion Approved',
+      message: `Your deletion request for "${targetTx.title}" was approved & finalized by Admin ${auth.user.name}.`,
+      isRead: false,
+      createdAt: new Date().toISOString(),
+      targetUserId: notifyUserId,
+      targetRole: null,
+      visibilityScope: 'user_specific',
+      relatedEntityType: 'transaction',
+      relatedEntityId: targetTx.id
+    });
+
+    writeDB(db);
+    res.json({ status: 'ok', transaction: targetTx });
+  } catch (err: any) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Reject Transaction Deletion Request
+app.post('/api/transactions/reject-delete', (req, res) => {
+  try {
+    const { transactionId } = req.body;
+    if (!transactionId) {
+      return res.status(400).json({ error: 'Provide transactionId.' });
+    }
+
+    const db = readDB();
+    const auth = getAuthUser(req, db);
+    if (!auth) return res.status(401).json({ error: 'Not authorized.' });
+
+    if (auth.role !== 'Admin') {
+      return res.status(403).json({ error: 'Only admins can reject delete requests.' });
+    }
+
+    const txIdx = db.transactions.findIndex(t => t.id === transactionId && t.orgId === auth.user.lastActiveOrgId);
+    if (txIdx === -1) {
+      return res.status(404).json({ error: 'Transaction record not found.' });
+    }
+
+    const targetTx = db.transactions[txIdx];
+
+    targetTx.deletionStatus = 'rejected';
+    targetTx.deletionRejectedBy = auth.user.id;
+    targetTx.deletionRejectedAt = new Date().toISOString();
+
+    // Audit log (action: transaction.delete_rejected)
+    db.audits.unshift({
+      id: 'au-' + uuid(),
+      orgId: auth.user.lastActiveOrgId!,
+      userId: auth.user.id,
+      userName: auth.user.name,
+      action: 'transaction.delete_rejected',
+      details: `Rejected deletion request for ${targetTx.type.toLowerCase()} "${targetTx.title}" of India currency ${targetTx.amount}.`,
+      timestamp: new Date().toISOString()
+    });
+
+    // Notification to requester (Treasurer)
+    const notifyUserId = targetTx.deletionRequestedBy || targetTx.createdByUserId;
+    db.notifications.unshift({
+      id: 'not-' + uuid(),
+      orgId: auth.user.lastActiveOrgId!,
+      userId: notifyUserId,
+      type: 'TransactionDeleteRejected',
+      title: 'Transaction Deletion Rejected',
+      message: `Your deletion request for "${targetTx.title}" was rejected by Admin ${auth.user.name}.`,
+      isRead: false,
+      createdAt: new Date().toISOString(),
+      targetUserId: notifyUserId,
+      targetRole: null,
+      visibilityScope: 'user_specific',
+      relatedEntityType: 'transaction',
+      relatedEntityId: targetTx.id
+    });
+
+    writeDB(db);
+    res.json({ status: 'ok', transaction: targetTx });
+  } catch (err: any) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Admin Direct soft-delete a transaction
+app.post('/api/transactions/direct-delete', (req, res) => {
+  try {
+    const { transactionId, reason } = req.body;
+    if (!transactionId || !reason) {
+      return res.status(400).json({ error: 'Provide transactionId and deletion reason.' });
+    }
+
+    const db = readDB();
+    const auth = getAuthUser(req, db);
+    if (!auth) return res.status(401).json({ error: 'Not authorized.' });
+
+    if (auth.role !== 'Admin') {
+      return res.status(403).json({ error: 'Only admins can directly delete transactions.' });
+    }
+
+    const txIdx = db.transactions.findIndex(t => t.id === transactionId && t.orgId === auth.user.lastActiveOrgId);
+    if (txIdx === -1) {
+      return res.status(404).json({ error: 'Transaction record not found.' });
+    }
+
+    const targetTx = db.transactions[txIdx];
+
+    targetTx.deletedAt = new Date().toISOString();
+    targetTx.deletedBy = auth.user.id;
+    targetTx.deletionReason = reason;
+    targetTx.deletionStatus = 'approved';
+
+    // Audit log (action: transaction.deleted_by_admin)
+    db.audits.unshift({
+      id: 'au-' + uuid(),
+      orgId: auth.user.lastActiveOrgId!,
+      userId: auth.user.id,
+      userName: auth.user.name,
+      action: 'transaction.deleted_by_admin',
+      details: `Directly soft deleted ${targetTx.type.toLowerCase()} "${targetTx.title}" of India currency ${targetTx.amount}. Reason: ${reason}`,
+      timestamp: new Date().toISOString()
+    });
+
+    // Notification to creator
+    db.notifications.unshift({
+      id: 'not-' + uuid(),
+      orgId: auth.user.lastActiveOrgId!,
+      userId: targetTx.createdByUserId,
+      type: 'TransactionDeleted',
+      title: 'Transaction Deleted by Admin',
+      message: `Your transaction "${targetTx.title}" was soft-deleted directly by Admin ${auth.user.name}. Reason: ${reason}.`,
+      isRead: false,
+      createdAt: new Date().toISOString(),
+      targetUserId: targetTx.createdByUserId,
+      targetRole: null,
+      visibilityScope: 'user_specific',
+      relatedEntityType: 'transaction',
+      relatedEntityId: targetTx.id
+    });
+
+    writeDB(db);
+    res.json({ status: 'ok', transaction: targetTx });
+  } catch (err: any) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Edit existing approved/pending transactions
 app.post('/api/transactions/edit', (req, res) => {
   const { id, title, amount, category, description, date, campaignId } = req.body;
@@ -1851,9 +2153,29 @@ app.get('/api/notifications', (req, res) => {
 
     const activeOrgId = auth.user.lastActiveOrgId;
     
-    // Return notifications belonging to active workspace and target user (or general alerts for admins)
+    // Return notifications belonging to active workspace and matching target criteria
     const list = (db.notifications || []).filter(n => {
-      return n && n.orgId === activeOrgId && (n.userId === auth.user.id || n.userId === 'user-admin');
+      if (!n || n.orgId !== activeOrgId) return false;
+
+      // Admin sees all
+      if (auth.role === 'Admin') return true;
+
+      // Target user ID matches
+      if (n.targetUserId === auth.user.id || n.userId === auth.user.id) return true;
+
+      // Target role matches
+      if (n.targetRole && n.targetRole.toLowerCase() === auth.role.toLowerCase()) return true;
+
+      // Visibility is marked public
+      if (n.visibilityScope === 'public_members') return true;
+
+      // Related to item they created
+      if (n.relatedEntityType === 'transaction' && n.relatedEntityId) {
+        const tx = db.transactions.find(t => t.id === n.relatedEntityId);
+        if (tx && tx.createdByUserId === auth.user.id) return true;
+      }
+
+      return false;
     });
 
     res.json({ notifications: list });
@@ -1880,10 +2202,26 @@ app.post('/api/notifications/read', (req, res) => {
       const notifyItem = db.notifications.find(n => n && n.id === notificationId);
       if (notifyItem) notifyItem.isRead = true;
     } else {
-      // Mark ALL as read
+      // Mark ALL authorized as read
       const activeOrgId = auth.user.lastActiveOrgId;
       db.notifications.forEach(n => {
-        if (n && n.orgId === activeOrgId && (n.userId === auth.user.id || n.userId === 'user-admin')) {
+        if (!n || n.orgId !== activeOrgId) return;
+
+        let satisfies = false;
+        if (auth.role === 'Admin') {
+          satisfies = true;
+        } else if (n.targetUserId === auth.user.id || n.userId === auth.user.id) {
+          satisfies = true;
+        } else if (n.targetRole && n.targetRole.toLowerCase() === auth.role.toLowerCase()) {
+          satisfies = true;
+        } else if (n.visibilityScope === 'public_members') {
+          satisfies = true;
+        } else if (n.relatedEntityType === 'transaction' && n.relatedEntityId) {
+          const tx = db.transactions.find(t => t.id === n.relatedEntityId);
+          if (tx && tx.createdByUserId === auth.user.id) satisfies = true;
+        }
+
+        if (satisfies) {
           n.isRead = true;
         }
       });
@@ -2158,7 +2496,7 @@ app.get('/api/transparency/:slug', (req, res) => {
 
   // Filter approved transactions (only show approved for public auditing!)
   const rawTx = db.transactions.filter(t => t.orgId === orgId);
-  const approvedTx = rawTx.filter(t => t.status === 'Approved');
+  const approvedTx = rawTx.filter(t => t.status === 'Approved' && !t.deletedAt);
 
   // Calculate stats
   const incomeTot = approvedTx.filter(t => t.type === 'Income').reduce((sum, t) => sum + t.amount, 0);

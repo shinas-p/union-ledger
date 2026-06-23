@@ -106,7 +106,18 @@ function mapTransaction(t: any) {
     rejectedByUserName: t.rejector_profile?.name || undefined,
     approvalDate: t.approval_date,
     rejectionDate: t.rejection_date,
-    createdAt: t.created_at
+    createdAt: t.created_at,
+
+    deletedAt: t.deleted_at,
+    deletedBy: t.deleted_by,
+    deletionReason: t.deletion_reason,
+    deletionStatus: t.deletion_status || 'none',
+    deletionRequestedBy: t.deletion_requested_by,
+    deletionRequestedAt: t.deletion_requested_at,
+    deletionApprovedBy: t.deletion_approved_by,
+    deletionApprovedAt: t.deletion_approved_at,
+    deletionRejectedBy: t.deletion_rejected_by,
+    deletionRejectedAt: t.deletion_rejected_at
   };
 }
 
@@ -136,7 +147,14 @@ function mapNotification(n: any) {
     title: n.title,
     message: n.message,
     isRead: n.is_read,
-    createdAt: n.created_at
+    createdAt: n.created_at,
+    
+    // New targeting fields
+    targetUserId: n.target_user_id || undefined,
+    targetRole: n.target_role || undefined,
+    visibilityScope: n.visibility_scope || undefined,
+    relatedEntityType: n.related_entity_type || undefined,
+    relatedEntityId: n.related_entity_id || undefined
   };
 }
 
@@ -753,7 +771,12 @@ export async function createNotification(n: any) {
       type: n.type,
       title: n.title,
       message: n.message,
-      is_read: n.isRead || false
+      is_read: n.isRead || false,
+      target_user_id: n.targetUserId || null,
+      target_role: n.targetRole || null,
+      visibility_scope: n.visibilityScope || null,
+      related_entity_type: n.relatedEntityType || null,
+      related_entity_id: n.relatedEntityId || null
     })
     .select()
     .single();

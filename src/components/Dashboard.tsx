@@ -59,7 +59,7 @@ export function Dashboard({
   const symbol = CURRENCY_SYMBOLS[currency] || '₹';
 
   // Approved totals
-  const approvedTx = transactions.filter(t => t.status === 'Approved');
+  const approvedTx = transactions.filter(t => t.status === 'Approved' && !t.deletedAt);
   
   const totalIncome = approvedTx
     .filter(t => t.type === 'Income')
@@ -73,7 +73,7 @@ export function Dashboard({
 
   const activeCampaignsCount = campaigns.filter(c => c.status === 'Active').length;
 
-  const pendingTransactions = transactions.filter(t => t.status === 'Pending');
+  const pendingTransactions = transactions.filter(t => t.status === 'Pending' && !t.deletedAt);
 
   // Prepare chart data grouping by date (last 7 releases)
   const last7DaysData = () => {

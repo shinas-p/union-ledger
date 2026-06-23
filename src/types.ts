@@ -91,6 +91,18 @@ export interface Transaction {
   approvedByUserId?: string;
   approvedByUserName?: string;
   campaignId?: string; // Opt linkage to fundraising campaign
+
+  // Soft delete and Approval tracking fields
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+  deletionReason?: string | null;
+  deletionStatus?: 'none' | 'requested' | 'approved' | 'rejected';
+  deletionRequestedBy?: string | null;
+  deletionRequestedAt?: string | null;
+  deletionApprovedBy?: string | null;
+  deletionApprovedAt?: string | null;
+  deletionRejectedBy?: string | null;
+  deletionRejectedAt?: string | null;
 }
 
 export interface Campaign {
@@ -120,11 +132,18 @@ export interface OrganizationNotification {
   id: string;
   orgId: string;
   userId: string; // target user
-  type: 'IncomeAdded' | 'ExpenseAdded' | 'TransactionApproved' | 'TransactionRejected' | 'DonationReceived' | 'MemberJoined';
+  type: 'IncomeAdded' | 'ExpenseAdded' | 'TransactionApproved' | 'TransactionRejected' | 'DonationReceived' | 'MemberJoined' | string;
   title: string;
   message: string;
   isRead: boolean;
   createdAt: string;
+
+  // Targeting preferences
+  targetUserId?: string | null;
+  targetRole?: UserRole | null;
+  visibilityScope?: 'all_admins' | 'role_based' | 'user_specific' | 'public_members';
+  relatedEntityType?: string;
+  relatedEntityId?: string;
 }
 
 export interface UserSession {

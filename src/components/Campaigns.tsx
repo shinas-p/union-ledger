@@ -58,7 +58,7 @@ export function Campaigns({
   const getCampaignRaised = (campId: string) => {
     // Only approved income items linked to campaign counts!
     return transactions
-      .filter(t => t.campaignId === campId && t.status === 'Approved' && t.type === 'Income')
+      .filter(t => t.campaignId === campId && t.status === 'Approved' && t.type === 'Income' && !t.deletedAt)
       .reduce((sum, t) => sum + t.amount, 0);
   };
 
