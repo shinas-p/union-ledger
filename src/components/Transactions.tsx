@@ -22,7 +22,9 @@ import {
   Download,
   Award,
   ChevronDown,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Trash2,
+  AlertTriangle
 } from 'lucide-react';
 import { Transaction, Campaign, CURRENCY_SYMBOLS, OrganizationCurrency, UserRole } from '../types';
 
@@ -61,6 +63,10 @@ export function Transactions({
   const [isEditTxOpen, setIsEditTxOpen] = useState(false);
   const [isReceiptViewOpen, setIsReceiptViewOpen] = useState(false);
   const [isExportOpen, setIsExportOpen] = useState(false);
+  const [showDeletedLegacy, setShowDeletedLegacy] = useState(false);
+  const [isDeleteReasonOpen, setIsDeleteReasonOpen] = useState(false);
+  const [targetDeleteTx, setTargetDeleteTx] = useState<Transaction | null>(null);
+  const [deleteReasonInput, setDeleteReasonInput] = useState('');
 
   // Form states
   const [formData, setFormData] = useState({
@@ -197,8 +203,91 @@ export function Transactions({
     setIsEditTxOpen(true);
   };
 
+  const triggerDelete = (tx: Transaction) => {
+    setTargetDeleteTx(tx);
+    setDeleteReasonInput('');
+    setIsDeleteReasonOpen(true);
+  };
+
+  const handleConfirmDelete = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetDeleteTx) return;
+    setError(null);
+
+    try {
+      const url = role === 'Admin' 
+        ? '/api/transactions/direct-delete' 
+        : '/api/transactions/request-delete';
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          transactionId: targetDeleteTx.id,
+          reason: deleteReasonInput
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to dispatch deletion.');
+
+      setIsDeleteReasonOpen(false);
+      setTargetDeleteTx(null);
+      setDeleteReasonInput('');
+      onRefresh();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const handleApproveDelete = async (txId: string) => {
+    setError(null);
+    try {
+      const r = await fetch('/api/transactions/approve-delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ transactionId: txId })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Failed to approve delete request.');
+      onRefresh();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const handleRejectDelete = async (txId: string) => {
+    setError(null);
+    try {
+      const r = await fetch('/api/transactions/reject-delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ transactionId: txId })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Failed to reject delete request.');
+      onRefresh();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
   // Filter pipeline
   const filteredTransactions = transactions.filter(t => {
+    // Soft-deleted records check
+    if (t.deletedAt && !showDeletedLegacy) {
+      return false;
+    }
+
     // Search
     const matchesSearch = t.title.toLowerCase().includes(search.toLowerCase()) || 
                           t.category.toLowerCase().includes(search.toLowerCase()) ||
@@ -415,6 +504,25 @@ export function Transactions({
             />
           </div>
         )}
+        {/* Toggle of soft deleted ledger logs */}
+        {(role === 'Admin' || role === 'Treasurer' || role === 'Auditor') && (
+          <div className="pt-2 border-t border-zinc-850/65 flex items-center justify-between gap-4">
+            <label className="inline-flex items-center gap-2.5 cursor-pointer select-none relative">
+              <input
+                id="toggle-deleted-audit-checkbox"
+                type="checkbox"
+                checked={showDeletedLegacy}
+                onChange={(e) => setShowDeletedLegacy(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-8 h-4.5 bg-zinc-800 rounded-full peer peer-focus:ring-1 peer-focus:ring-[#D6FF20]/50 peer-checked:bg-[#D6FF20]/25 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-500 after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:after:translate-x-3.5 peer-checked:after:bg-[#D6FF20] relative" />
+              <span className="text-xs text-zinc-300 font-semibold font-mono tracking-wide uppercase">Include Soft-Deleted Audit Logs</span>
+            </label>
+            <span className="text-[10px] font-mono text-zinc-500 hidden sm:inline">
+              Only accessible to privileged roles (Admin, Treasurer, Auditor).
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Main Ledger Table view */}
@@ -433,111 +541,176 @@ export function Transactions({
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-850 text-xs">
-              {filteredTransactions.map((tx) => (
-                <tr key={tx.id} className="hover:bg-brand-secondary/20 transition-all font-sans" id={`tx-registry-${tx.id}`}>
-                  {/* Title & Date */}
-                  <td className="py-4 px-6">
-                    <div>
-                      <span className="text-white font-semibold leading-tight block">{tx.title}</span>
-                      <span className="text-[10px] font-mono text-zinc-500 block mt-0.5">{tx.date} • ID: {tx.id.substring(0,8)}</span>
-                    </div>
-                  </td>
-                  
-                  {/* Flow Indicator */}
-                  <td className="py-4 px-3">
-                    <span className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider ${tx.type === 'Income' ? 'bg-emerald-950/40 text-emerald-400' : 'bg-rose-950/40 text-rose-400'}`}>
-                      {tx.type}
-                    </span>
-                  </td>
-
-                  {/* Amount with monospace formatting */}
-                  <td className="py-4 px-3">
-                    <span className="text-white font-mono font-semibold text-sm">
-                      {symbol}{tx.amount.toLocaleString()}
-                    </span>
-                  </td>
-
-                  {/* Category */}
-                  <td className="py-4 px-3 text-zinc-400 font-mono text-[11px]">
-                    {tx.category}
-                  </td>
-
-                  {/* Creator */}
-                  <td className="py-4 px-3">
-                    <div>
-                      <span className="text-zinc-300 block">{tx.createdByUserName}</span>
-                      <span className="text-[10px] font-mono text-zinc-500 block">Proposed</span>
-                    </div>
-                  </td>
-
-                  {/* Status pills or workflow trigger */}
-                  <td className="py-4 px-3">
-                    <div className="flex flex-col gap-1 items-start">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                        tx.status === 'Approved' ? 'bg-emerald-950/30 text-emerald-400 border border-emerald-900/50' : 
-                        tx.status === 'Pending' ? 'bg-yellow-950/40 text-amber-400 border border-amber-800/40 animate-pulse' : 
-                        'bg-red-950/30 text-rose-400 border border-red-900/30'
-                      }`}>
-                        ● {tx.status}
+              {filteredTransactions.map((tx) => {
+                const isDeleted = !!tx.deletedAt;
+                const isRequested = tx.deletionStatus === 'requested';
+                return (
+                  <tr 
+                    key={tx.id} 
+                    className={`transition-all font-sans ${
+                      isDeleted 
+                        ? 'bg-rose-950/15 text-zinc-500 hover:bg-rose-950/20 opacity-75' 
+                        : isRequested 
+                          ? 'bg-amber-950/10 text-zinc-300 hover:bg-amber-950/15'
+                          : 'hover:bg-brand-secondary/20 text-zinc-300'
+                    }`} 
+                    id={`tx-registry-${tx.id}`}
+                  >
+                    {/* Title & Date */}
+                    <td className="py-4 px-6">
+                      <div>
+                        <span className={`text-white font-semibold leading-tight block ${isDeleted ? 'line-through text-zinc-500' : ''}`}>{tx.title}</span>
+                        <span className="text-[10px] font-mono text-zinc-500 block mt-0.5">{tx.date} • ID: {tx.id.substring(0,8)}</span>
+                        {isDeleted && tx.deletionReason && (
+                          <span className="text-[10px] font-mono text-rose-400 mt-1 block">🚫 Deletion Reason: {tx.deletionReason}</span>
+                        )}
+                        {isRequested && tx.deletionReason && (
+                          <span className="text-[10px] font-mono text-amber-400 mt-1 block">⚠️ Proposed Deletion Reason: {tx.deletionReason}</span>
+                        )}
+                      </div>
+                    </td>
+                    
+                    {/* Flow Indicator */}
+                    <td className="py-4 px-3">
+                      <span className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider ${tx.type === 'Income' ? 'bg-emerald-950/40 text-emerald-400' : 'bg-rose-950/40 text-rose-400'}`}>
+                        {tx.type}
                       </span>
-                      {tx.status === 'Approved' && tx.approvedByUserName && (
-                        <span className="text-[9px] font-mono text-zinc-500 block">Validated: {tx.approvedByUserName}</span>
-                      )}
-                    </div>
-                  </td>
+                    </td>
 
-                  {/* Receipts Attachment, actions, workflow decisions */}
-                  <td className="py-4 px-6 text-right">
-                    <div className="flex justify-end gap-2 items-center">
-                      {tx.receiptData ? (
-                        <button
-                          id={`preview-receipt-btn-${tx.id}`}
-                          onClick={() => triggerReceiptPreview(tx)}
-                          className="p-1 px-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] font-mono font-medium flex items-center gap-1 cursor-pointer hover:border hover:border-brand/40"
-                        >
-                          <Paperclip size={10} />
-                          <span>Receipt</span>
-                        </button>
-                      ) : (
-                        <span className="text-[10px] font-mono text-zinc-600 italic">No receipt</span>
-                      )}
+                    {/* Amount with monospace formatting */}
+                    <td className="py-4 px-3">
+                      <span className={`font-mono font-semibold text-sm ${isDeleted ? 'line-through text-zinc-500' : 'text-white'}`}>
+                        {symbol}{tx.amount.toLocaleString()}
+                      </span>
+                    </td>
 
-                      {/* Edit option */}
-                      {(role === 'Admin' || role === 'Treasurer') && (
-                        <button
-                          id={`edit-tx-btn-${tx.id}`}
-                          onClick={() => triggerEdit(tx)}
-                          className="p-1 rounded bg-zinc-850 hover:bg-zinc-800 hover:col border border-zinc-800 text-zinc-400 hover:text-[#D6FF20] cursor-pointer"
-                        >
-                          <Edit size={11} />
-                        </button>
-                      )}
+                    {/* Category */}
+                    <td className="py-4 px-3 text-zinc-400 font-mono text-[11px]">
+                      {tx.category}
+                    </td>
 
-                      {/* Direct approvals in columns for rapid actions */}
-                      {tx.status === 'Pending' && (role === 'Admin' || role === 'Treasurer') && (
-                        <div className="flex gap-1 ml-2">
+                    {/* Creator */}
+                    <td className="py-4 px-3">
+                      <div>
+                        <span className="text-zinc-300 block">{tx.createdByUserName}</span>
+                        <span className="text-[10px] font-mono text-zinc-500 block">Proposed</span>
+                      </div>
+                    </td>
+
+                    {/* Status pills or workflow trigger */}
+                    <td className="py-4 px-3">
+                      <div className="flex flex-col gap-1 items-start">
+                        {isDeleted ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-955/40 text-rose-400 border border-rose-900/40">
+                            🚫 DELETED
+                          </span>
+                        ) : isRequested ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-950/40 text-amber-400 border border-amber-800/40 animate-pulse">
+                            ⚠️ DELETE REQUEST
+                          </span>
+                        ) : (
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                            tx.status === 'Approved' ? 'bg-emerald-950/30 text-emerald-400 border border-emerald-900/50' : 
+                            tx.status === 'Pending' ? 'bg-yellow-950/40 text-amber-400 border border-amber-800/40 animate-pulse' : 
+                            'bg-red-950/30 text-rose-400 border border-red-900/30'
+                          }`}>
+                            ● {tx.status}
+                          </span>
+                        )}
+                        {!isDeleted && tx.status === 'Approved' && tx.approvedByUserName && (
+                          <span className="text-[9px] font-mono text-zinc-500 block">Validated: {tx.approvedByUserName}</span>
+                        )}
+                        {isDeleted && tx.deletedBy && (
+                          <span className="text-[9px] font-mono text-zinc-500 block">By Admin</span>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* Receipts Attachment, actions, workflow decisions */}
+                    <td className="py-4 px-6 text-right">
+                      <div className="flex justify-end gap-2 items-center">
+                        {tx.receiptData ? (
                           <button
-                            id={`approve-col-btn-${tx.id}`}
-                            onClick={() => onApproveTransaction(tx.id, 'Approved')}
-                            className="bg-emerald-950 hover:bg-emerald-900 text-emerald-400 p-1 rounded cursor-pointer"
-                            title="Quick Approve"
+                            id={`preview-receipt-btn-${tx.id}`}
+                            onClick={() => triggerReceiptPreview(tx)}
+                            className="p-1 px-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] font-mono font-medium flex items-center gap-1 cursor-pointer hover:border hover:border-brand/40"
                           >
-                            <Check size={12} />
+                            <Paperclip size={10} />
+                            <span>Receipt</span>
                           </button>
+                        ) : (
+                          <span className="text-[10px] font-mono text-zinc-600 italic">No receipt</span>
+                        )}
+
+                        {/* Edit option (only if not soft deleted) */}
+                        {!isDeleted && !isRequested && (role === 'Admin' || role === 'Treasurer') && (
                           <button
-                            id={`reject-col-btn-${tx.id}`}
-                            onClick={() => onApproveTransaction(tx.id, 'Rejected')}
-                            className="bg-rose-955 bg-rose-950 hover:bg-rose-900 text-rose-400 p-1 rounded cursor-pointer"
-                            title="Quick Reject"
+                            id={`edit-tx-btn-${tx.id}`}
+                            onClick={() => triggerEdit(tx)}
+                            className="p-1 rounded bg-zinc-850 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-[#D6FF20] cursor-pointer"
                           >
-                            <X size={12} />
+                            <Edit size={11} />
                           </button>
-                        </div>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                        )}
+
+                        {/* Deletion option or approval controls */}
+                        {!isDeleted && !isRequested && (role === 'Admin' || role === 'Treasurer') && (
+                          <button
+                            id={`delete-tx-btn-${tx.id}`}
+                            onClick={() => triggerDelete(tx)}
+                            className="p-1 rounded bg-zinc-850 hover:bg-rose-955/35 border border-zinc-800 hover:border-rose-900 text-zinc-400 hover:text-rose-400 cursor-pointer"
+                            title={role === 'Admin' ? 'Soft-Delete' : 'Propose Deletion'}
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        )}
+
+                        {/* Direct approvals for Pending state */}
+                        {!isDeleted && tx.status === 'Pending' && (role === 'Admin' || role === 'Treasurer') && (
+                          <div className="flex gap-1 ml-2">
+                            <button
+                              id={`approve-col-btn-${tx.id}`}
+                              onClick={() => onApproveTransaction(tx.id, 'Approved')}
+                              className="bg-emerald-950 hover:bg-emerald-900 text-emerald-400 p-1 rounded cursor-pointer"
+                              title="Quick Approve"
+                            >
+                              <Check size={12} />
+                            </button>
+                            <button
+                              id={`reject-col-btn-${tx.id}`}
+                              onClick={() => onApproveTransaction(tx.id, 'Rejected')}
+                              className="bg-rose-950 hover:bg-rose-900 text-rose-400 p-1 rounded cursor-pointer"
+                              title="Quick Reject"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Admin approval/rejection of Deletion Requests */}
+                        {!isDeleted && isRequested && role === 'Admin' && (
+                          <div className="flex gap-1 ml-2">
+                            <button
+                              onClick={() => handleApproveDelete(tx.id)}
+                              className="bg-emerald-950 hover:bg-emerald-900 text-emerald-400 p-1 px-2 rounded cursor-pointer font-mono text-[9px] flex items-center gap-1"
+                              title="Confirm soft deletion request"
+                            >
+                              <Check size={10} /> Approve Deletion
+                            </button>
+                            <button
+                              onClick={() => handleRejectDelete(tx.id)}
+                              className="bg-rose-950 hover:bg-rose-900 text-rose-400 p-1 px-2 rounded cursor-pointer font-mono text-[9px] flex items-center gap-1"
+                              title="Reject deletion request"
+                            >
+                              <X size={10} /> Reject
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
 
               {filteredTransactions.length === 0 && (
                 <tr>
@@ -936,6 +1109,63 @@ export function Transactions({
                 <span>Open Print / PDF compiled formatting</span>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Modal: Soft Deletion Reason dialog */}
+      {isDeleteReasonOpen && targetDeleteTx && (
+        <div className="fixed inset-0 bg-black/75 flex items-center justify-center p-4 z-50 animate-fade-in" id="delete-reason-modal">
+          <div className="bg-brand-surface border border-brand-secondary max-w-md w-full rounded-2xl overflow-hidden shadow-2xl relative text-left text-zinc-300">
+            <div className="p-5 bg-brand-secondary border-b border-zinc-850 flex justify-between items-center">
+              <h3 className="font-sans font-bold text-sm text-white flex items-center gap-1.5">
+                <AlertTriangle size={16} className="text-rose-400" />
+                <span>{role === 'Admin' ? 'Confirm Soft Deletion' : 'Propose Transaction Deletion'}</span>
+              </h3>
+              <button
+                id="close-delete-reason-btn"
+                onClick={() => { setIsDeleteReasonOpen(false); setTargetDeleteTx(null); setDeleteReasonInput(''); }}
+                className="text-zinc-400 hover:text-white p-1 rounded cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmDelete} className="p-5 space-y-4">
+              {error && (
+                <div className="bg-rose-950/30 border border-rose-900 text-rose-300 text-xs p-3 rounded-lg">
+                  {error}
+                </div>
+              )}
+
+              <div>
+                <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest block mb-1">Target Transaction</span>
+                <div className="p-3 bg-brand-bg rounded-lg border border-zinc-850 text-xs text-zinc-300">
+                  <span className="text-white font-bold block">{targetDeleteTx.title}</span>
+                  <span className="text-zinc-400 block mt-1">{symbol}{targetDeleteTx.amount.toLocaleString()} • {targetDeleteTx.category} • {targetDeleteTx.date}</span>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest block">Reason for Deletion</label>
+                <textarea
+                  rows={3}
+                  required
+                  placeholder="Provide an auditable reason for erasing this financial ledger record..."
+                  value={deleteReasonInput}
+                  onChange={(e) => setDeleteReasonInput(e.target.value)}
+                  className="w-full bg-brand-bg border border-zinc-800 focus:border-brand rounded-lg p-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-brand/45"
+                />
+              </div>
+
+              <button
+                id="submit-delete-reason-btn"
+                type="submit"
+                className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-3 text-xs rounded-xl cursor-pointer hover:scale-[1.01] transition-all"
+              >
+                {role === 'Admin' ? 'Confirm and soft-delete' : 'Submit Deletion Request'}
+              </button>
+            </form>
           </div>
         </div>
       )}

@@ -366,3 +366,79 @@ begin
   where id = target_user_id;
 end;
 $$ language plpgsql security definer;
+
+-- -------------------------------------------------------------
+-- 6. BORROW & LOAN LEDGER
+-- -------------------------------------------------------------
+
+create table public.borrow_records (
+  id uuid default gen_random_uuid() primary key,
+  org_id uuid references public.organizations(id) on delete cascade not null,
+  type text not null check (type in ('borrowed_from_union', 'borrowed_by_union')),
+  borrower_name text not null,
+  lender_name text not null,
+  amount numeric(15,2) not null check (amount >= 0),
+  amount_repaid numeric(15,2) default 0.00 not null check (amount_repaid >= 0),
+  balance_due numeric(15,2) default 0.00 not null check (balance_due >= 0),
+  purpose text,
+  due_date date,
+  status text default 'active' not null check (status in ('active', 'partially_paid', 'fully_paid', 'overdue', 'waived')),
+  created_by uuid references public.profiles(id) on delete set null,
+  approved_by uuid references public.profiles(id) on delete set null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  notes text,
+  public_visible boolean default true not null
+);
+
+create table public.borrow_repayments (
+  id uuid default gen_random_uuid() primary key,
+  borrow_record_id uuid references public.borrow_records(id) on delete cascade not null,
+  org_id uuid references public.organizations(id) on delete cascade not null,
+  amount numeric(15,2) not null check (amount > 0),
+  payment_date date not null,
+  payment_method text,
+  note text,
+  recorded_by uuid references public.profiles(id) on delete set null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  transaction_id uuid references public.transactions(id) on delete set null
+);
+
+-- RLS Configuration for Borrow/Loan Ledger
+alter table public.borrow_records disable row level security;
+alter table public.borrow_repayments disable row level security;
+
+create policy "Allow viewing to active members or public if transparent and public_visible"
+  on public.borrow_records for select
+  using (
+    org_id in (select org_id from public.organization_members where user_id = auth.uid() and status = 'Active')
+    or (
+      public_visible = true 
+      and org_id in (select id from public.organizations where transparency_enabled = true)
+    )
+  );
+
+create policy "Allow active members to insert/update borrow records based on role"
+  on public.borrow_records for all
+  to authenticated
+  using (
+    org_id in (select org_id from public.organization_members where user_id = auth.uid() and status = 'Active')
+  );
+
+create policy "Allow viewing of repayments to active members or public if linked borrow is public"
+  on public.borrow_repayments for select
+  using (
+    org_id in (select org_id from public.organization_members where user_id = auth.uid() and status = 'Active')
+    or borrow_record_id in (
+      select id from public.borrow_records where public_visible = true 
+      and org_id in (select id from public.organizations where transparency_enabled = true)
+    )
+  );
+
+create policy "Allow active members to manage repayments"
+  on public.borrow_repayments for all
+  to authenticated
+  using (
+    org_id in (select org_id from public.organization_members where user_id = auth.uid() and status = 'Active')
+  );
+

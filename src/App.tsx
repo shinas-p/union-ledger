@@ -40,6 +40,7 @@ import { Audits } from './components/Audits';
 import { Settings as SettingsComponent } from './components/Settings';
 import { Profile } from './components/Profile';
 import { PublicTransparency } from './components/PublicTransparency';
+import { Borrows } from './components/Borrows';
 import { NotificationCenter } from './components/NotificationCenter';
 import { AuthCallback } from './components/AuthCallback';
 import { EmailConfirmed } from './components/EmailConfirmed';
@@ -57,7 +58,7 @@ export default function App() {
   const [status, setStatus] = useState<'Active' | 'Suspended'>('Active');
 
   // Navigation
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'campaigns' | 'members' | 'audits' | 'settings' | 'profile'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'campaigns' | 'members' | 'audits' | 'settings' | 'profile' | 'borrows'>('dashboard');
   const [publicPortalSlug, setPublicPortalSlug] = useState<string | null>(null);
   const [currentPath, setCurrentPath] = useState(window.location.pathname);
 
@@ -91,6 +92,8 @@ export default function App() {
   const [transactions, setTransactions] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [audits, setAudits] = useState([]);
+  const [borrows, setBorrows] = useState([]);
+  const [repayments, setRepayments] = useState([]);
 
   // Swapper modals
   const [isSwitcherOpen, setIsSwitcherOpen] = useState(false);
@@ -317,6 +320,16 @@ export default function App() {
       if (adRes.ok) {
         const adData = await adRes.json();
         setAudits(adData.audits || []);
+      }
+
+      // 4. Fetch borrows and loans
+      const brRes = await fetch('/api/borrows', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (brRes.ok) {
+        const brData = await brRes.json();
+        setBorrows(brData.borrows || []);
+        setRepayments(brData.repayments || []);
       }
     } catch (err) {
       console.error('Error fetching snapshot from database', err);
@@ -621,6 +634,7 @@ export default function App() {
     { id: 'dashboard', label: 'Overview Panel', icon: LayoutDashboard },
     { id: 'transactions', label: 'Ledger Registry', icon: Coins },
     { id: 'campaigns', label: 'Funds & Campaigns', icon: Target },
+    { id: 'borrows', label: 'Borrow & Loan Ledger', icon: Layers },
     { id: 'members', label: 'Roster Directory', icon: Users },
     { id: 'audits', label: 'Audit Trail logs', icon: ScrollText },
     { id: 'settings', label: 'Workspace Config', icon: SettingsIcon },
@@ -919,6 +933,7 @@ export default function App() {
                     transactions={transactions}
                     campaigns={campaigns}
                     audits={audits}
+                    borrows={borrows}
                     currency={currentOrg.currency}
                     role={status === 'Suspended' ? 'Viewer (Suspended)' : role}
                     onNavigate={setActiveTab}
@@ -962,6 +977,15 @@ export default function App() {
 
                 {activeTab === 'audits' && (
                   <Audits token={token} />
+                )}
+
+                {activeTab === 'borrows' && (
+                  <Borrows
+                    currency={currentOrg.currency}
+                    role={status === 'Suspended' ? 'Viewer' : role}
+                    token={token}
+                    onRefresh={() => setRefreshToggle(p => !p)}
+                  />
                 )}
 
                 {activeTab === 'settings' && (

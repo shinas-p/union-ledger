@@ -90,6 +90,7 @@ export interface Transaction {
   createdByUserName: string;
   approvedByUserId?: string;
   approvedByUserName?: string;
+  approvalDate?: string;
   campaignId?: string; // Opt linkage to fundraising campaign
 
   // Soft delete and Approval tracking fields
@@ -149,4 +150,43 @@ export interface OrganizationNotification {
 export interface UserSession {
   token: string;
   user: UserProfile;
+}
+
+export type BorrowType = 'borrowed_from_union' | 'borrowed_by_union';
+export type BorrowStatus = 'active' | 'partially_paid' | 'fully_paid' | 'overdue' | 'waived';
+
+export interface BorrowRecord {
+  id: string;
+  orgId: string;
+  type: BorrowType;
+  borrowerName: string;
+  lenderName: string;
+  amount: number;
+  amountRepaid: number;
+  balanceDue: number;
+  purpose: string;
+  dueDate: string;
+  status: BorrowStatus;
+  createdBy: string;
+  createdByName?: string;
+  approvedBy?: string | null;
+  approvedByName?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  notes: string;
+  publicVisible: boolean;
+}
+
+export interface BorrowRepayment {
+  id: string;
+  borrowRecordId: string;
+  orgId: string;
+  amount: number;
+  paymentDate: string;
+  paymentMethod: string;
+  note: string;
+  recordedBy: string;
+  recordedByName?: string;
+  createdAt: string;
+  transactionId?: string | null;
 }

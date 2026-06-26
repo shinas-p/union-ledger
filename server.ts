@@ -17,7 +17,9 @@ import {
   AuditLog, 
   OrganizationNotification,
   UserRole,
-  OrganizationCurrency
+  OrganizationCurrency,
+  BorrowRecord,
+  BorrowRepayment
 } from './src/types';
 
 import dotenv from 'dotenv';
@@ -45,6 +47,8 @@ interface DatabaseSchema {
   campaigns: Campaign[];
   audits: AuditLog[];
   notifications: OrganizationNotification[];
+  borrows: BorrowRecord[];
+  repayments: BorrowRepayment[];
 }
 
 let dbMemoryCache: DatabaseSchema | null = null;
@@ -381,6 +385,65 @@ async function persistToSupabase(newDb: DatabaseSchema) {
       if (error) logSupabaseError('Error syncing audit_logs to Supabase', error);
     }
 
+    // 9. Sync borrow records
+    const borrowsPayload = newDb.borrows
+      .filter((b: any) => b.orgId && newDb.organizations[b.orgId])
+      .map((b: any) => ({
+        id: toSupabaseId(b.id),
+        org_id: toSupabaseId(b.orgId),
+        type: b.type,
+        borrower_name: b.borrowerName,
+        lender_name: b.lenderName,
+        amount: b.amount,
+        amount_repaid: b.amountRepaid,
+        balance_due: b.balanceDue,
+        purpose: b.purpose || null,
+        due_date: b.dueDate || null,
+        status: b.status,
+        created_by: b.createdBy ? toSupabaseId(b.createdBy) : null,
+        approved_by: b.approvedBy ? toSupabaseId(b.approvedBy) : null,
+        created_at: b.createdAt,
+        updated_at: b.updatedAt,
+        notes: b.notes || null,
+        public_visible: b.publicVisible
+      }));
+    if (borrowsPayload.length > 0) {
+      const { error } = await client.from('borrow_records').upsert(borrowsPayload);
+      if (error) logSupabaseError('Error syncing borrow_records to Supabase', error);
+    }
+
+    // Synchronize Borrow Record Deletions
+    const currentBorrowIds = newDb.borrows.map(b => toSupabaseId(b.id));
+    if (currentBorrowIds.length > 0) {
+      const { data: dbBorrows } = await client.from('borrow_records').select('id');
+      const dbBorrowIds = (dbBorrows || []).map(d => d.id);
+      const toDelete = dbBorrowIds.filter(id => !currentBorrowIds.includes(id));
+      if (toDelete.length > 0) {
+        const { error } = await client.from('borrow_records').delete().in('id', toDelete);
+        if (error) logSupabaseError('Error deleting borrow_records from Supabase', error);
+      }
+    }
+
+    // 10. Sync borrow repayments
+    const repaymentsPayload = newDb.repayments
+      .filter((r: any) => r.orgId && newDb.organizations[r.orgId])
+      .map((r: any) => ({
+        id: toSupabaseId(r.id),
+        borrow_record_id: toSupabaseId(r.borrowRecordId),
+        org_id: toSupabaseId(r.orgId),
+        amount: r.amount,
+        payment_date: r.paymentDate,
+        payment_method: r.paymentMethod || null,
+        note: r.note || null,
+        recorded_by: r.recordedBy ? toSupabaseId(r.recordedBy) : null,
+        created_at: r.createdAt,
+        transaction_id: r.transactionId ? toSupabaseId(r.transactionId) : null
+      }));
+    if (repaymentsPayload.length > 0) {
+      const { error } = await client.from('borrow_repayments').upsert(repaymentsPayload);
+      if (error) logSupabaseError('Error syncing borrow_repayments to Supabase', error);
+    }
+
   } catch (err) {
     console.error('Error synchronizing database writes to Supabase:', err);
   }
@@ -394,14 +457,16 @@ async function loadDatabaseFromSupabase() {
     console.log('Connecting to Supabase single source of truth context...');
 
     const [
-      { data: profiles },
-      { data: orgs },
-      { data: members },
-      { data: campaigns },
-      { data: transactions },
-      { data: invites },
-      { data: notifications },
-      { data: audits }
+      profilesRes,
+      orgsRes,
+      membersRes,
+      campaignsRes,
+      transactionsRes,
+      invitesRes,
+      notificationsRes,
+      auditsRes,
+      borrowRes,
+      repaymentRes
     ] = await Promise.all([
       client.from('profiles').select('*'),
       client.from('organizations').select('*'),
@@ -410,8 +475,21 @@ async function loadDatabaseFromSupabase() {
       client.from('transactions').select('*'),
       client.from('invite_links').select('*'),
       client.from('notifications').select('*'),
-      client.from('audit_logs').select('*')
+      client.from('audit_logs').select('*'),
+      client.from('borrow_records').select('*'),
+      client.from('borrow_repayments').select('*')
     ]);
+
+    const profiles = profilesRes.data;
+    const orgs = orgsRes.data;
+    const members = membersRes.data;
+    const campaigns = campaignsRes.data;
+    const transactions = transactionsRes.data;
+    const invites = invitesRes.data;
+    const notifications = notificationsRes.data;
+    const audits = auditsRes.data;
+    const borrowRecords = borrowRes?.data || [];
+    const borrowRepayments = repaymentRes?.data || [];
 
     // Read local db.json if it exists to merge registered offline users/actions
     let localDb: DatabaseSchema | null = null;
@@ -442,7 +520,9 @@ async function loadDatabaseFromSupabase() {
       transactions: [],
       campaigns: [],
       audits: [],
-      notifications: []
+      notifications: [],
+      borrows: [],
+      repayments: []
     };
 
     (profiles || []).forEach((p: any) => {
@@ -583,6 +663,49 @@ async function loadDatabaseFromSupabase() {
       timestamp: a.timestamp
     }));
 
+    newDb.borrows = (borrowRecords || []).map((b: any) => {
+      const creator = (profiles || []).find((x: any) => x.id === b.created_by);
+      const approver = (profiles || []).find((x: any) => x.id === b.approved_by);
+      return {
+        id: fromSupabaseId(b.id) || b.id,
+        orgId: fromSupabaseId(b.org_id) || b.org_id,
+        type: b.type,
+        borrowerName: b.borrower_name,
+        lenderName: b.lender_name,
+        amount: Number(b.amount),
+        amountRepaid: Number(b.amount_repaid),
+        balanceDue: Number(b.balance_due),
+        purpose: b.purpose || '',
+        dueDate: b.due_date || '',
+        status: b.status,
+        createdBy: fromSupabaseId(b.created_by) || '',
+        createdByName: creator?.name || 'Unknown User',
+        approvedBy: fromSupabaseId(b.approved_by) || null,
+        approvedByName: approver?.name || null,
+        createdAt: b.created_at,
+        updatedAt: b.updated_at,
+        notes: b.notes || '',
+        publicVisible: b.public_visible !== undefined ? b.public_visible : true
+      };
+    });
+
+    newDb.repayments = (borrowRepayments || []).map((r: any) => {
+      const recorder = (profiles || []).find((x: any) => x.id === r.recorded_by);
+      return {
+        id: fromSupabaseId(r.id) || r.id,
+        borrowRecordId: fromSupabaseId(r.borrow_record_id) || r.borrow_record_id,
+        orgId: fromSupabaseId(r.org_id) || r.org_id,
+        amount: Number(r.amount),
+        paymentDate: r.payment_date,
+        paymentMethod: r.payment_method || '',
+        note: r.note || '',
+        recordedBy: fromSupabaseId(r.recorded_by) || '',
+        recordedByName: recorder?.name || 'Unknown User',
+        createdAt: r.created_at,
+        transactionId: fromSupabaseId(r.transaction_id) || null
+      };
+    });
+
     // Merge any locally registered users/organizations to Supabase
     if (localDb) {
       let mergedAny = false;
@@ -650,6 +773,22 @@ async function loadDatabaseFromSupabase() {
           }
         });
       }
+      if (localDb.borrows) {
+        localDb.borrows.forEach((b) => {
+          if (!newDb.borrows.find(x => x.id === b.id)) {
+            newDb.borrows.push(b);
+            mergedAny = true;
+          }
+        });
+      }
+      if (localDb.repayments) {
+        localDb.repayments.forEach((r) => {
+          if (!newDb.repayments.find(x => x.id === r.id)) {
+            newDb.repayments.push(r);
+            mergedAny = true;
+          }
+        });
+      }
 
       if (mergedAny) {
         console.log('Merging local records into Supabase registry cache...');
@@ -692,16 +831,18 @@ function readDB(): DatabaseSchema {
   if (!db.campaigns) db.campaigns = [];
   if (!db.audits) db.audits = [];
   if (!db.notifications) db.notifications = [];
+  if (!db.borrows) db.borrows = [];
+  if (!db.repayments) db.repayments = [];
 
   return db;
 }
 
 // Function to write JSON Database
-function writeDB(data: DatabaseSchema) {
+async function writeDB(data: DatabaseSchema) {
   if (supabaseService.isSupabaseConfigured()) {
     dbMemoryCache = data;
-    // Asynchronously push to Supabase to keep API responses instant
-    persistToSupabase(data);
+    // Await the push to Supabase to guarantee persistence
+    await persistToSupabase(data);
   }
   try {
     // Ensure parent directory exists
@@ -761,8 +902,10 @@ function seedDatabase(): DatabaseSchema {
   const transactions: Transaction[] = [];
   const audits: AuditLog[] = [];
   const notifications: OrganizationNotification[] = [];
+  const borrows: BorrowRecord[] = [];
+  const repayments: BorrowRepayment[] = [];
 
-  const dbData = { users, organizations, members, invites, transactions, campaigns, audits, notifications };
+  const dbData = { users, organizations, members, invites, transactions, campaigns, audits, notifications, borrows, repayments };
   writeDB(dbData);
   return dbData;
 }
@@ -801,14 +944,13 @@ app.use(async (req, res, next) => {
               if (!cachedUser) {
                 const lowerEmail = (user.email || '').toLowerCase().trim();
                 const existing = Object.values(db.users).find(u => u.email.toLowerCase() === lowerEmail);
-                
-                if (existing) {
+                           if (existing) {
                   // If user exists locally, map them to Supabase Authenticated UUID
                   cachedUser = existing;
                   delete db.users[existing.id];
                   cachedUser.id = user.id;
                   db.users[user.id] = cachedUser;
-                  writeDB(db);
+                  await writeDB(db);
                   console.log(`[AUTH MIDDLEWARE] Migrated user id to Supabase UID ${user.id}`);
                 } else {
                   // Create a fresh cached user profile
@@ -821,7 +963,7 @@ app.use(async (req, res, next) => {
                     passwordHash: ''
                   };
                   db.users[user.id] = cachedUser;
-                  writeDB(db);
+                  await writeDB(db);
                   console.log(`[AUTH MIDDLEWARE] Cached profile for user UID ${user.id}`);
                 }
               }
@@ -924,7 +1066,7 @@ app.get('/api/auth/check-email', async (req, res) => {
       // Clean up organization memberships for deleted user
       db.members = db.members.filter(m => m.userId !== cachedUser.id);
       
-      writeDB(db);
+      await writeDB(db);
       console.log(`[CHECK-EMAIL-BACKEND] Stale records purged successfully. Re-sync completed.`);
     } else if (!supabaseService.isSupabaseConfigured()) {
       exists = true;
@@ -937,7 +1079,7 @@ app.get('/api/auth/check-email', async (req, res) => {
 });
 
 // Register User
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', async (req, res) => {
   const { name, email, password } = req.body;
   if (!name || !email || !password) {
     console.warn('[SIGNUP] Failed registration attempt: missing fields.');
@@ -966,7 +1108,7 @@ app.post('/api/auth/register', (req, res) => {
   };
 
   db.users[userId] = newUser;
-  writeDB(db);
+  await writeDB(db);
 
   res.json({
     token: userId,
@@ -1037,7 +1179,7 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 // Log System/Auth Diagnostics Event
-app.post('/api/auth/log-event', (req, res) => {
+app.post('/api/auth/log-event', async (req, res) => {
   const { userId, action, details } = req.body;
   if (!userId || !action || !details) {
     return res.status(400).json({ error: 'Missing log fields' });
@@ -1067,7 +1209,7 @@ app.post('/api/auth/log-event', (req, res) => {
       details: details,
       timestamp: new Date().toISOString()
     });
-    writeDB(db);
+    await writeDB(db);
   }
 
   console.log(`[DIAGNOSTICS] ${action.toUpperCase()}: Email: "${userEmail}" (UID: ${userId}) - Details: "${details}"`);
@@ -1075,7 +1217,7 @@ app.post('/api/auth/log-event', (req, res) => {
 });
 
 // Switch Active Org
-app.post('/api/orgs/switch', (req, res) => {
+app.post('/api/orgs/switch', async (req, res) => {
   const { orgId } = req.body;
   if (!orgId) {
     console.warn('[ORG SWITCH] Attempted switch with empty orgId.');
@@ -1100,7 +1242,7 @@ app.post('/api/orgs/switch', (req, res) => {
 
   // Update profile
   db.users[auth.user.id].lastActiveOrgId = orgId;
-  writeDB(db);
+  await writeDB(db);
 
   console.log(`[ORG SWITCH] Success: User "${auth.user.name}" has successfully switched to workspace "${orgId}" with role "${member.role}".`);
 
@@ -1108,7 +1250,7 @@ app.post('/api/orgs/switch', (req, res) => {
 });
 
 // Create Or Join Organization
-app.post('/api/orgs', (req, res) => {
+app.post('/api/orgs', async (req, res) => {
   const { name, logoUrl, currency } = req.body;
   if (!name) return res.status(400).json({ error: 'Organization name required' });
 
@@ -1158,13 +1300,13 @@ app.post('/api/orgs', (req, res) => {
     timestamp: new Date().toISOString()
   });
 
-  writeDB(db);
+  await writeDB(db);
 
   res.json({ org: newOrg, role: 'Admin' });
 });
 
 // Join with Invitation Code / Joint Code
-app.post('/api/orgs/join', (req, res) => {
+app.post('/api/orgs/join', async (req, res) => {
   const { code } = req.body;
   if (!code) {
     console.warn('[INVITE REDEMPTION] Attempted join with empty code.');
@@ -1213,7 +1355,7 @@ app.post('/api/orgs/join', (req, res) => {
           createdBy: 'b4ac6bce-259d-4cd2-a9d4-a734a4ddd4a8'
         };
         db.invites.push(newSeedInvite);
-        writeDB(db);
+        await writeDB(db);
         invite = newSeedInvite;
         console.log(`[INVITE LOOKUP] Dynamically self-seeded missing test code "${uppercaseCode}" linked to organization "${firstOrgId}".`);
       }
@@ -1252,7 +1394,7 @@ app.post('/api/orgs/join', (req, res) => {
     }
     // Just switch active context
     db.users[auth.user.id].lastActiveOrgId = targetOrgId;
-    writeDB(db);
+    await writeDB(db);
     console.log(`[INVITE REDEMPTION] User "${auth.user.name}" already was a member. Switched active workspace to "${targetOrgId}".`);
     return res.json({ status: 'already_member', orgId: targetOrgId, message: 'You are already a member! Swapped your active workspace.' });
   }
@@ -1304,14 +1446,14 @@ app.post('/api/orgs/join', (req, res) => {
     relatedEntityId: newMember.id
   });
 
-  writeDB(db);
+  await writeDB(db);
   console.log(`[INVITE REDEMPTION] Success: User "${auth.user.name}" has successfully joined Org "${targetOrgName}" (${targetOrgId}) as "${targetRole}".`);
 
   res.json({ status: 'joined', orgId: targetOrgId, role: targetRole, orgName: targetOrgName });
 });
 
 // Create dynamic role-based invites
-app.post('/api/orgs/invites', (req, res) => {
+app.post('/api/orgs/invites', async (req, res) => {
   const { role, usageLimit, daysValid } = req.body;
   if (!role) return res.status(400).json({ error: 'Role is required' });
 
@@ -1352,7 +1494,7 @@ app.post('/api/orgs/invites', (req, res) => {
   };
 
   db.invites.push(newInvite);
-  writeDB(db);
+  await writeDB(db);
 
   console.log(`[INVITE GENERATION] Successfully generated invite code "${newInvite.code}" (Expires: ${newInvite.expiresAt || 'Never'}, UsageLimit: ${newInvite.usageLimit || 'infinite'}).`);
 
@@ -1360,7 +1502,7 @@ app.post('/api/orgs/invites', (req, res) => {
 });
 
 // Revoke/Delete custom invite links
-app.post('/api/orgs/invites/revoke', (req, res) => {
+app.post('/api/orgs/invites/revoke', async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ error: 'Code to revoke is required' });
 
@@ -1375,7 +1517,7 @@ app.post('/api/orgs/invites/revoke', (req, res) => {
   }
 
   db.invites[inviteIdx].isRevoked = true;
-  writeDB(db);
+  await writeDB(db);
 
   res.json({ status: 'ok', message: 'Invite successfully revoked.' });
 });
@@ -1429,7 +1571,7 @@ app.get('/api/members', (req, res) => {
 });
 
 // Update Member Role or Status (Suspended/Active)
-app.post('/api/members/update', (req, res) => {
+app.post('/api/members/update', async (req, res) => {
   const { memberId, role, status } = req.body;
   if (!memberId) return res.status(400).json({ error: 'memberId is essential.' });
 
@@ -1495,12 +1637,12 @@ app.post('/api/members/update', (req, res) => {
     });
   }
 
-  writeDB(db);
+  await writeDB(db);
   res.json({ status: 'ok', member: targetMember });
 });
 
 // Remove Member entirely from active workspace
-app.post('/api/members/remove', (req, res) => {
+app.post('/api/members/remove', async (req, res) => {
   const { memberId } = req.body;
   if (!memberId) return res.status(400).json({ error: 'memberId is essential.' });
 
@@ -1535,7 +1677,7 @@ app.post('/api/members/remove', (req, res) => {
     timestamp: new Date().toISOString()
   });
 
-  writeDB(db);
+  await writeDB(db);
   res.json({ status: 'ok', message: 'Member successfully removed.' });
 });
 
@@ -1556,7 +1698,7 @@ app.get('/api/transactions', (req, res) => {
 });
 
 // Create Income or Expense Transaction
-app.post('/api/transactions', (req, res) => {
+app.post('/api/transactions', async (req, res) => {
   const { type, title, amount, category, description, date, campaignId, receiptName, receiptData } = req.body;
   if (!type || !title || !amount || !category || !date) {
     return res.status(400).json({ error: 'Missing mandatory transaction parameters.' });
@@ -1584,12 +1726,7 @@ app.post('/api/transactions', (req, res) => {
   if (!activeOrgId) return res.status(400).json({ error: 'No active organization set' });
 
   // Self-approve only if creator is Admin / Treasurer, otherwise standard default is Pending
-  // Wait: The user specified:
-  // "Pending Approval Page actions: approve, reject. Role Based Permissions. Audit every action."
-  // Let's set Status defaults:
-  // Admin & Treasurer transactions can be pre-approved or pending based on form switch, but let's default proposed items to Pending for strict transparency or Approved directly based on administrative authority. Let's make it so that Treasurers or Admins can submit transactions as Approved automatically, or submit as Proposed (Pending) to seek auditor/collective signs. Viewers cannot submit, Auditors are viewer-only but look up. To keep the approval pipeline rich, we default items added by Treasurers to "Pending" OR let them create Approved items directly, but we let them select "Draft Proposed (Pending Approval)" so we can visualize and verify the approval action!
   const status = (auth.role === 'Admin' || auth.role === 'Treasurer') ? 'Approved' : 'Pending';
-  // Let's allow passing status 'Pending' directly if they explicitly choose to propose a budget item, or force 'Pending' status if any user proposes it! Let's allow setting status or default it to Pending for all non-admins to explore. Let's let them pass `status` option in body, defaulting based on permission.
   const finalStatus = req.body.status || status;
 
   const txId = 'tx-' + uuid();
@@ -1642,7 +1779,9 @@ app.post('/api/transactions', (req, res) => {
     title: `New Organization ${type}`,
     message: `${auth.user.name} reported a new ${type.toLowerCase()} of ${CURRENCY_SYMBOLS[db.organizations[activeOrgId].currency]}${parsedAmount} - "${title}". Status: ${finalStatus}.`,
     isRead: false,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    relatedEntityType: 'transaction',
+    relatedEntityId: txId
   });
 
   // Also check if it's a Donation linked to a Campaign!
@@ -1657,17 +1796,19 @@ app.post('/api/transactions', (req, res) => {
         title: `Donation Received - ${campaign.title}`,
         message: `Contribution of ${CURRENCY_SYMBOLS[db.organizations[activeOrgId].currency]}${parsedAmount} logged from "${title}" towards ${campaign.title}.`,
         isRead: false,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        relatedEntityType: 'transaction',
+        relatedEntityId: txId
       });
     }
   }
 
-  writeDB(db);
+  await writeDB(db);
   res.json({ status: 'ok', transaction: newTx });
 });
 
 // Update approved/rejected status inside the pipeline
-app.post('/api/transactions/approve', (req, res) => {
+app.post('/api/transactions/approve', async (req, res) => {
   const { transactionId, status } = req.body; // status is 'Approved' or 'Rejected'
   if (!transactionId || !status) {
     return res.status(400).json({ error: 'Provide transactionId and target approval status.' });
@@ -1723,15 +1864,17 @@ app.post('/api/transactions/approve', (req, res) => {
     title: `Transaction Request ${status}`,
     message: `Your proposed ${targetTx.type.toLowerCase()} "${targetTx.title}" has been ${status.toLowerCase()} by ${auth.user.name}.`,
     isRead: false,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    relatedEntityType: 'transaction',
+    relatedEntityId: targetTx.id
   });
 
-  writeDB(db);
+  await writeDB(db);
   res.json({ status: 'ok', transaction: targetTx });
 });
 
 // Request Transaction Deletion
-app.post('/api/transactions/request-delete', (req, res) => {
+app.post('/api/transactions/request-delete', async (req, res) => {
   try {
     const { transactionId, reason } = req.body;
     if (!transactionId || !reason) {
@@ -1786,7 +1929,7 @@ app.post('/api/transactions/request-delete', (req, res) => {
       relatedEntityId: targetTx.id
     });
 
-    writeDB(db);
+    await writeDB(db);
     res.json({ status: 'ok', transaction: targetTx });
   } catch (err: any) {
     console.error(err);
@@ -1795,7 +1938,7 @@ app.post('/api/transactions/request-delete', (req, res) => {
 });
 
 // Approve Transaction Deletion Request
-app.post('/api/transactions/approve-delete', (req, res) => {
+app.post('/api/transactions/approve-delete', async (req, res) => {
   try {
     const { transactionId } = req.body;
     if (!transactionId) {
@@ -1852,7 +1995,7 @@ app.post('/api/transactions/approve-delete', (req, res) => {
       relatedEntityId: targetTx.id
     });
 
-    writeDB(db);
+    await writeDB(db);
     res.json({ status: 'ok', transaction: targetTx });
   } catch (err: any) {
     console.error(err);
@@ -1861,7 +2004,7 @@ app.post('/api/transactions/approve-delete', (req, res) => {
 });
 
 // Reject Transaction Deletion Request
-app.post('/api/transactions/reject-delete', (req, res) => {
+app.post('/api/transactions/reject-delete', async (req, res) => {
   try {
     const { transactionId } = req.body;
     if (!transactionId) {
@@ -1916,7 +2059,7 @@ app.post('/api/transactions/reject-delete', (req, res) => {
       relatedEntityId: targetTx.id
     });
 
-    writeDB(db);
+    await writeDB(db);
     res.json({ status: 'ok', transaction: targetTx });
   } catch (err: any) {
     console.error(err);
@@ -1925,7 +2068,7 @@ app.post('/api/transactions/reject-delete', (req, res) => {
 });
 
 // Admin Direct soft-delete a transaction
-app.post('/api/transactions/direct-delete', (req, res) => {
+app.post('/api/transactions/direct-delete', async (req, res) => {
   try {
     const { transactionId, reason } = req.body;
     if (!transactionId || !reason) {
@@ -1980,7 +2123,7 @@ app.post('/api/transactions/direct-delete', (req, res) => {
       relatedEntityId: targetTx.id
     });
 
-    writeDB(db);
+    await writeDB(db);
     res.json({ status: 'ok', transaction: targetTx });
   } catch (err: any) {
     console.error(err);
@@ -1989,7 +2132,7 @@ app.post('/api/transactions/direct-delete', (req, res) => {
 });
 
 // Edit existing approved/pending transactions
-app.post('/api/transactions/edit', (req, res) => {
+app.post('/api/transactions/edit', async (req, res) => {
   const { id, title, amount, category, description, date, campaignId } = req.body;
   if (!id || !title || !amount || !category || !date) {
     return res.status(400).json({ error: 'Missing mandatory transaction values.' });
@@ -2030,7 +2173,7 @@ app.post('/api/transactions/edit', (req, res) => {
     timestamp: new Date().toISOString()
   });
 
-  writeDB(db);
+  await writeDB(db);
   res.json({ status: 'ok', transaction: targetTx });
 });
 
@@ -2051,7 +2194,7 @@ app.get('/api/campaigns', (req, res) => {
 });
 
 // Create Campaign
-app.post('/api/campaigns', (req, res) => {
+app.post('/api/campaigns', async (req, res) => {
   const { title, description, goalAmount, startDate, endDate, status } = req.body;
   if (!title || !goalAmount || !startDate || !endDate) {
     return res.status(400).json({ error: 'Missing core campaign parameters.' });
@@ -2093,12 +2236,12 @@ app.post('/api/campaigns', (req, res) => {
     timestamp: new Date().toISOString()
   });
 
-  writeDB(db);
+  await writeDB(db);
   res.json({ status: 'ok', campaign: newCampaign });
 });
 
 // Edit Campaign
-app.post('/api/campaigns/update', (req, res) => {
+app.post('/api/campaigns/update', async (req, res) => {
   const { id, title, description, goalAmount, startDate, endDate, status } = req.body;
   if (!id) return res.status(400).json({ error: 'Provide campaign id.' });
 
@@ -2124,8 +2267,468 @@ app.post('/api/campaigns/update', (req, res) => {
   target.endDate = endDate || target.endDate;
   target.status = status || target.status;
 
-  writeDB(db);
+  await writeDB(db);
   res.json({ status: 'ok', campaign: target });
+});
+
+// -----------------------------------------------------
+// BORROW & LOAN LEDGER ROUTING
+// -----------------------------------------------------
+
+// Get borrow records
+app.get('/api/borrows', (req, res) => {
+  const db = readDB();
+  const auth = getAuthUser(req, db);
+  if (!auth) return res.status(401).json({ error: 'Not authorized' });
+
+  const activeOrgId = auth.user.lastActiveOrgId;
+  if (!activeOrgId) return res.status(400).json({ error: 'No active organization selected' });
+
+  let list = db.borrows.filter(b => b.orgId === activeOrgId);
+  let repaymentsList = db.repayments.filter(r => r.orgId === activeOrgId);
+
+  if (auth.role === 'Viewer') {
+    list = list.filter(b => b.publicVisible);
+    const publicIds = new Set(list.map(b => b.id));
+    repaymentsList = repaymentsList.filter(r => publicIds.has(r.borrowRecordId));
+  }
+
+  res.json({ borrows: list, repayments: repaymentsList });
+});
+
+// Create Borrow record
+app.post('/api/borrows', async (req, res) => {
+  const db = readDB();
+  const auth = getAuthUser(req, db);
+  if (!auth) return res.status(401).json({ error: 'Not authorized' });
+
+  if (auth.role !== 'Admin' && auth.role !== 'Treasurer') {
+    return res.status(403).json({ error: 'Only Admins and Treasurers can create borrow records' });
+  }
+
+  const activeOrgId = auth.user.lastActiveOrgId;
+  if (!activeOrgId) return res.status(400).json({ error: 'No active organization selected' });
+
+  const { type, borrowerName, lenderName, amount, purpose, dueDate, publicVisible, notes } = req.body;
+  if (!type || !borrowerName || !lenderName || amount === undefined) {
+    return res.status(400).json({ error: 'Missing mandatory fields: type, borrowerName, lenderName, amount' });
+  }
+
+  const parsedAmount = parseFloat(amount);
+  if (isNaN(parsedAmount) || parsedAmount < 0) {
+    return res.status(400).json({ error: 'Invalid amount' });
+  }
+
+  const borrowId = 'br-' + uuid();
+  const newRecord: BorrowRecord = {
+    id: borrowId,
+    orgId: activeOrgId,
+    type,
+    borrowerName,
+    lenderName,
+    amount: parsedAmount,
+    amountRepaid: 0,
+    balanceDue: parsedAmount,
+    purpose: purpose || '',
+    dueDate: dueDate || '',
+    status: 'active',
+    createdBy: auth.user.id,
+    createdByName: auth.user.name,
+    approvedBy: auth.role === 'Admin' ? auth.user.id : null,
+    approvedByName: auth.role === 'Admin' ? auth.user.name : null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    notes: notes || '',
+    publicVisible: publicVisible !== undefined ? publicVisible : true
+  };
+
+  db.borrows.unshift(newRecord);
+
+  // Audit log
+  db.audits.unshift({
+    id: 'au-' + uuid(),
+    orgId: activeOrgId,
+    userId: auth.user.id,
+    userName: auth.user.name,
+    action: 'borrow.created',
+    details: `Created borrow record: ${type === 'borrowed_from_union' ? borrowerName : lenderName} (${type}) for ${parsedAmount}`,
+    timestamp: new Date().toISOString()
+  });
+
+  // Notify Admins
+  const admins = db.members.filter(m => m.orgId === activeOrgId && m.role === 'Admin');
+  const currencySymbol = CURRENCY_SYMBOLS[db.organizations[activeOrgId]?.currency] || '₹';
+  admins.forEach(admin => {
+    db.notifications.unshift({
+      id: 'not-' + uuid(),
+      orgId: activeOrgId,
+      userId: admin.userId,
+      type: 'BorrowCreated',
+      title: 'New Borrow Record Created',
+      message: `${auth.user.name} created a new borrow record of ${currencySymbol}${parsedAmount} for ${type === 'borrowed_from_union' ? borrowerName : lenderName}.`,
+      isRead: false,
+      createdAt: new Date().toISOString()
+    });
+  });
+
+  await writeDB(db);
+  res.json({ status: 'ok', borrow: newRecord });
+});
+
+// Edit Borrow record
+app.post('/api/borrows/edit', async (req, res) => {
+  const db = readDB();
+  const auth = getAuthUser(req, db);
+  if (!auth) return res.status(401).json({ error: 'Not authorized' });
+
+  if (auth.role !== 'Admin') {
+    return res.status(403).json({ error: 'Only Admins can edit borrow records' });
+  }
+
+  const { id, borrowerName, lenderName, amount, purpose, dueDate, status, publicVisible, notes } = req.body;
+  const recordIndex = db.borrows.findIndex(b => b.id === id);
+  if (recordIndex === -1) {
+    return res.status(404).json({ error: 'Borrow record not found' });
+  }
+
+  const record = db.borrows[recordIndex];
+  if (borrowerName) record.borrowerName = borrowerName;
+  if (lenderName) record.lenderName = lenderName;
+  if (amount !== undefined) {
+    const parsedAmount = parseFloat(amount);
+    if (!isNaN(parsedAmount)) {
+      record.amount = parsedAmount;
+    }
+  }
+  if (purpose !== undefined) record.purpose = purpose;
+  if (dueDate !== undefined) record.dueDate = dueDate;
+  if (publicVisible !== undefined) record.publicVisible = publicVisible;
+  if (notes !== undefined) record.notes = notes;
+  if (status !== undefined) record.status = status;
+
+  // Recalculate balance
+  record.balanceDue = Math.max(0, record.amount - record.amountRepaid);
+  if (record.status !== 'waived') {
+    if (record.balanceDue <= 0) {
+      record.status = 'fully_paid';
+    } else if (record.amountRepaid > 0) {
+      record.status = 'partially_paid';
+    } else {
+      record.status = 'active';
+    }
+  } else {
+    record.balanceDue = 0;
+  }
+  record.updatedAt = new Date().toISOString();
+
+  // Audit log
+  db.audits.unshift({
+    id: 'au-' + uuid(),
+    orgId: record.orgId,
+    userId: auth.user.id,
+    userName: auth.user.name,
+    action: 'borrow.updated',
+    details: `Updated borrow record ${record.id}`,
+    timestamp: new Date().toISOString()
+  });
+
+  await writeDB(db);
+  res.json({ status: 'ok', borrow: record });
+});
+
+// Approve Borrow record
+app.post('/api/borrows/approve', async (req, res) => {
+  const db = readDB();
+  const auth = getAuthUser(req, db);
+  if (!auth) return res.status(401).json({ error: 'Not authorized' });
+
+  if (auth.role !== 'Admin') {
+    return res.status(403).json({ error: 'Only Admins can approve borrow records' });
+  }
+
+  const { id } = req.body;
+  const record = db.borrows.find(b => b.id === id);
+  if (!record) {
+    return res.status(404).json({ error: 'Borrow record not found' });
+  }
+
+  record.approvedBy = auth.user.id;
+  record.approvedByName = auth.user.name;
+  record.updatedAt = new Date().toISOString();
+
+  // Audit log
+  db.audits.unshift({
+    id: 'au-' + uuid(),
+    orgId: record.orgId,
+    userId: auth.user.id,
+    userName: auth.user.name,
+    action: 'borrow.approved',
+    details: `Approved borrow record ${record.id}`,
+    timestamp: new Date().toISOString()
+  });
+
+  // Notify Treasurer
+  db.notifications.unshift({
+    id: 'not-' + uuid(),
+    orgId: record.orgId,
+    userId: record.createdBy,
+    type: 'BorrowApproved',
+    title: 'Borrow Record Approved',
+    message: `Your borrow record for ${record.borrowerName || record.lenderName} of amount ${record.amount} has been approved by ${auth.user.name}.`,
+    isRead: false,
+    createdAt: new Date().toISOString()
+  });
+
+  await writeDB(db);
+  res.json({ status: 'ok', borrow: record });
+});
+
+// Record a repayment
+app.post('/api/borrows/repay', async (req, res) => {
+  const db = readDB();
+  const auth = getAuthUser(req, db);
+  if (!auth) return res.status(401).json({ error: 'Not authorized' });
+
+  if (auth.role !== 'Admin' && auth.role !== 'Treasurer') {
+    return res.status(403).json({ error: 'Only Admins and Treasurers can record repayments' });
+  }
+
+  const { borrowRecordId, amount, paymentDate, paymentMethod, note } = req.body;
+  if (!borrowRecordId || amount === undefined || !paymentDate) {
+    return res.status(400).json({ error: 'Missing mandatory fields: borrowRecordId, amount, paymentDate' });
+  }
+
+  const parsedAmount = parseFloat(amount);
+  if (isNaN(parsedAmount) || parsedAmount <= 0) {
+    return res.status(400).json({ error: 'Invalid repayment amount' });
+  }
+
+  const record = db.borrows.find(b => b.id === borrowRecordId);
+  if (!record) {
+    return res.status(404).json({ error: 'Borrow record not found' });
+  }
+
+  // Create transaction integration
+  const txId = 'tx-' + uuid();
+  const txType = record.type === 'borrowed_from_union' ? 'Income' : 'Expense';
+  const txTitle = `Repayment: ${record.type === 'borrowed_from_union' ? record.borrowerName : record.lenderName} - ${record.purpose || 'Borrow repayment'}`;
+  const currencySymbol = CURRENCY_SYMBOLS[db.organizations[record.orgId]?.currency] || '₹';
+
+  const newTx: Transaction = {
+    id: txId,
+    orgId: record.orgId,
+    type: txType,
+    title: txTitle,
+    amount: parsedAmount,
+    category: 'Borrow Repayment',
+    description: note || `Repayment recorded for borrow record ID ${record.id}`,
+    date: paymentDate,
+    status: 'Approved',
+    createdAt: new Date().toISOString(),
+    createdByUserId: auth.user.id,
+    createdByUserName: auth.user.name,
+    approvedByUserId: auth.user.id,
+    approvedByUserName: auth.user.name,
+    approvalDate: new Date().toISOString()
+  };
+
+  db.transactions.unshift(newTx);
+
+  const repaymentId = 'brp-' + uuid();
+  const repayment: BorrowRepayment = {
+    id: repaymentId,
+    borrowRecordId,
+    orgId: record.orgId,
+    amount: parsedAmount,
+    paymentDate,
+    paymentMethod: paymentMethod || 'Cash',
+    note: note || '',
+    recordedBy: auth.user.id,
+    recordedByName: auth.user.name,
+    createdAt: new Date().toISOString(),
+    transactionId: txId
+  };
+
+  db.repayments.unshift(repayment);
+
+  // Update borrow record balance
+  record.amountRepaid += parsedAmount;
+  record.balanceDue = Math.max(0, record.amount - record.amountRepaid);
+  if (record.status !== 'waived') {
+    if (record.balanceDue <= 0) {
+      record.status = 'fully_paid';
+    } else {
+      record.status = 'partially_paid';
+    }
+  }
+  record.updatedAt = new Date().toISOString();
+
+  // Audit log
+  db.audits.unshift({
+    id: 'au-' + uuid(),
+    orgId: record.orgId,
+    userId: auth.user.id,
+    userName: auth.user.name,
+    action: 'borrow.repayment_added',
+    details: `Recorded repayment of ${parsedAmount} for borrow record ${record.id}`,
+    timestamp: new Date().toISOString()
+  });
+
+  // Notify Admins
+  const admins = db.members.filter(m => m.orgId === record.orgId && m.role === 'Admin');
+  admins.forEach(admin => {
+    db.notifications.unshift({
+      id: 'not-' + uuid(),
+      orgId: record.orgId,
+      userId: admin.userId,
+      type: 'BorrowRepaymentRecorded',
+      title: 'Borrow Repayment Recorded',
+      message: `${auth.user.name} recorded a repayment of ${currencySymbol}${parsedAmount} for ${record.type === 'borrowed_from_union' ? record.borrowerName : record.lenderName}.`,
+      isRead: false,
+      createdAt: new Date().toISOString()
+    });
+  });
+
+  await writeDB(db);
+  res.json({ status: 'ok', repayment, borrow: record });
+});
+
+// Close a Borrow record (Mark fully paid)
+app.post('/api/borrows/close', async (req, res) => {
+  const db = readDB();
+  const auth = getAuthUser(req, db);
+  if (!auth) return res.status(401).json({ error: 'Not authorized' });
+
+  if (auth.role !== 'Admin') {
+    return res.status(403).json({ error: 'Only Admins can close borrow records' });
+  }
+
+  const { id } = req.body;
+  const record = db.borrows.find(b => b.id === id);
+  if (!record) {
+    return res.status(404).json({ error: 'Borrow record not found' });
+  }
+
+  record.status = 'fully_paid';
+  record.balanceDue = 0;
+  record.updatedAt = new Date().toISOString();
+
+  // Audit log
+  db.audits.unshift({
+    id: 'au-' + uuid(),
+    orgId: record.orgId,
+    userId: auth.user.id,
+    userName: auth.user.name,
+    action: 'borrow.closed',
+    details: `Marked borrow record ${record.id} as fully paid (closed)`,
+    timestamp: new Date().toISOString()
+  });
+
+  await writeDB(db);
+  res.json({ status: 'ok', borrow: record });
+});
+
+// Waive borrow record / Request Waiver
+app.post('/api/borrows/waive', async (req, res) => {
+  const db = readDB();
+  const auth = getAuthUser(req, db);
+  if (!auth) return res.status(401).json({ error: 'Not authorized' });
+
+  const { id } = req.body;
+  const record = db.borrows.find(b => b.id === id);
+  if (!record) {
+    return res.status(404).json({ error: 'Borrow record not found' });
+  }
+
+  if (auth.role === 'Admin') {
+    record.status = 'waived';
+    record.balanceDue = 0;
+    record.updatedAt = new Date().toISOString();
+
+    // Audit log
+    db.audits.unshift({
+      id: 'au-' + uuid(),
+      orgId: record.orgId,
+      userId: auth.user.id,
+      userName: auth.user.name,
+      action: 'borrow.waived',
+      details: `Waived borrow record ${record.id}`,
+      timestamp: new Date().toISOString()
+    });
+
+    // Notify Treasurer
+    db.notifications.unshift({
+      id: 'not-' + uuid(),
+      orgId: record.orgId,
+      userId: record.createdBy,
+      type: 'BorrowWaived',
+      title: 'Borrow Record Waived',
+      message: `The borrow record for ${record.borrowerName || record.lenderName} of amount ${record.amount} has been waived by Admin ${auth.user.name}.`,
+      isRead: false,
+      createdAt: new Date().toISOString()
+    });
+
+    await writeDB(db);
+    return res.json({ status: 'ok', borrow: record });
+  } else if (auth.role === 'Treasurer') {
+    // Notify Admins of Waive Request
+    const admins = db.members.filter(m => m.orgId === record.orgId && m.role === 'Admin');
+    const currencySymbol = CURRENCY_SYMBOLS[db.organizations[record.orgId]?.currency] || '₹';
+    admins.forEach(admin => {
+      db.notifications.unshift({
+        id: 'not-' + uuid(),
+        orgId: record.orgId,
+        userId: admin.userId,
+        type: 'BorrowWaiveRequest',
+        title: 'Waiver Requested',
+        message: `${auth.user.name} requested a waiver for borrow record: ${record.type === 'borrowed_from_union' ? record.borrowerName : record.lenderName} of ${currencySymbol}${record.amount}.`,
+        isRead: false,
+        createdAt: new Date().toISOString()
+      });
+    });
+
+    await writeDB(db);
+    return res.json({ status: 'ok', message: 'Waiver request sent to Admins' });
+  } else {
+    return res.status(403).json({ error: 'Only Admins and Treasurers can waive records' });
+  }
+});
+
+// Delete Borrow record
+app.post('/api/borrows/delete', async (req, res) => {
+  const db = readDB();
+  const auth = getAuthUser(req, db);
+  if (!auth) return res.status(401).json({ error: 'Not authorized' });
+
+  if (auth.role !== 'Admin') {
+    return res.status(403).json({ error: 'Only Admins can delete borrow records' });
+  }
+
+  const { id } = req.body;
+  const recordIndex = db.borrows.findIndex(b => b.id === id);
+  if (recordIndex === -1) {
+    return res.status(404).json({ error: 'Borrow record not found' });
+  }
+
+  const record = db.borrows[recordIndex];
+  db.borrows.splice(recordIndex, 1);
+
+  // Also delete associated repayments
+  db.repayments = db.repayments.filter(r => r.borrowRecordId !== id);
+
+  // Audit log
+  db.audits.unshift({
+    id: 'au-' + uuid(),
+    orgId: record.orgId,
+    userId: auth.user.id,
+    userName: auth.user.name,
+    action: 'borrow.deleted',
+    details: `Deleted borrow record ${id} of amount ${record.amount}`,
+    timestamp: new Date().toISOString()
+  });
+
+  await writeDB(db);
+  res.json({ status: 'ok' });
 });
 
 // -----------------------------------------------------
@@ -2157,22 +2760,58 @@ app.get('/api/notifications', (req, res) => {
     const list = (db.notifications || []).filter(n => {
       if (!n || n.orgId !== activeOrgId) return false;
 
-      // Admin sees all
+      // Admin sees everything
       if (auth.role === 'Admin') return true;
 
-      // Target user ID matches
+      // Direct targets
       if (n.targetUserId === auth.user.id || n.userId === auth.user.id) return true;
 
-      // Target role matches
+      // Specific target role
       if (n.targetRole && n.targetRole.toLowerCase() === auth.role.toLowerCase()) return true;
 
-      // Visibility is marked public
-      if (n.visibilityScope === 'public_members') return true;
+      // General public/member scope
+      if ((n.visibilityScope as string) === 'public_members') return true;
 
-      // Related to item they created
-      if (n.relatedEntityType === 'transaction' && n.relatedEntityId) {
-        const tx = db.transactions.find(t => t.id === n.relatedEntityId);
-        if (tx && tx.createdByUserId === auth.user.id) return true;
+      // Rule 1: Treasurer relevance
+      if (auth.role === 'Treasurer') {
+        // - transactions they created
+        if (n.relatedEntityType === 'transaction' && n.relatedEntityId) {
+          const tx = db.transactions.find(t => t.id === n.relatedEntityId);
+          if (tx && tx.createdByUserId === auth.user.id) return true;
+        }
+        // - transactions requiring their action (e.g., deletion approved/rejected, status changes of their transactions)
+        if (n.type === 'TransactionDeleteApproved' || n.type === 'TransactionDeleteRejected' || n.type === 'TransactionApproved' || n.type === 'TransactionRejected') {
+          return true;
+        }
+        // - campaigns they manage (e.g., related to campaigns in organization)
+        if (n.relatedEntityType === 'campaign' || n.type === 'DonationReceived') {
+          return true;
+        }
+      }
+
+      // Rule 2: Auditor relevance
+      if (auth.role === 'Auditor') {
+        // - transactions pending approval
+        if (n.relatedEntityType === 'transaction' && n.relatedEntityId) {
+          const tx = db.transactions.find(t => t.id === n.relatedEntityId);
+          if (tx && tx.status === 'Pending') return true;
+        }
+        // - transactions flagged for review (e.g., deletion requested or flagged alerts)
+        if (n.type === 'TransactionDeleteRequested' || n.type === 'TransactionFlagged' || (n.title && n.title.toLowerCase().includes('delete requested'))) {
+          return true;
+        }
+        // - audit reports generated
+        if (n.type === 'AuditReportGenerated' || (n.title && n.title.toLowerCase().includes('audit'))) {
+          return true;
+        }
+      }
+
+      // Rule 3: Viewer relevance
+      if (auth.role === 'Viewer') {
+        // - general organization updates & public reports published
+        if ((n.visibilityScope as string) === 'public_members' || n.type === 'ReportPublished' || n.type === 'OrgUpdate' || (n.title && n.title.toLowerCase().includes('report'))) {
+          return true;
+        }
       }
 
       return false;
@@ -2186,7 +2825,7 @@ app.get('/api/notifications', (req, res) => {
 });
 
 // Mark notifications read
-app.post('/api/notifications/read', (req, res) => {
+app.post('/api/notifications/read', async (req, res) => {
   try {
     const { notificationId } = req.body;
     
@@ -2214,7 +2853,7 @@ app.post('/api/notifications/read', (req, res) => {
           satisfies = true;
         } else if (n.targetRole && n.targetRole.toLowerCase() === auth.role.toLowerCase()) {
           satisfies = true;
-        } else if (n.visibilityScope === 'public_members') {
+        } else if ((n.visibilityScope as string) === 'public_members') {
           satisfies = true;
         } else if (n.relatedEntityType === 'transaction' && n.relatedEntityId) {
           const tx = db.transactions.find(t => t.id === n.relatedEntityId);
@@ -2227,7 +2866,7 @@ app.post('/api/notifications/read', (req, res) => {
       });
     }
 
-    writeDB(db);
+    await writeDB(db);
     res.json({ status: 'ok' });
   } catch (err: any) {
     console.error('Error marking notifications read:', err);
@@ -2236,7 +2875,7 @@ app.post('/api/notifications/read', (req, res) => {
 });
 
 // Update Organization Settings (Currency, Name, Logo)
-app.post('/api/orgs/settings', (req, res) => {
+app.post('/api/orgs/settings', async (req, res) => {
   const { name, logoUrl, currency } = req.body;
   
   const db = readDB();
@@ -2270,12 +2909,12 @@ app.post('/api/orgs/settings', (req, res) => {
     timestamp: new Date().toISOString()
   });
 
-  writeDB(db);
+  await writeDB(db);
   res.json({ status: 'ok', organization: org });
 });
 
 // Update profile photo/name/details
-app.post('/api/auth/profile/update', (req, res) => {
+app.post('/api/auth/profile/update', async (req, res) => {
   const { name, avatarUrl, phone, bio, preferredCurrency, notificationPreferences } = req.body;
   if (!name) return res.status(400).json({ error: 'Profile name is mandatory.' });
 
@@ -2330,12 +2969,12 @@ app.post('/api/auth/profile/update', (req, res) => {
     }
   });
 
-  writeDB(db);
+  await writeDB(db);
   res.json({ status: 'ok', user: profile });
 });
 
 // Change Password endpoint
-app.post('/api/auth/password/change', (req, res) => {
+app.post('/api/auth/password/change', async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ error: 'Current password and new password are required.' });
@@ -2366,12 +3005,12 @@ app.post('/api/auth/password/change', (req, res) => {
     });
   });
 
-  writeDB(db);
+  await writeDB(db);
   res.json({ status: 'ok', message: 'Password changed successfully' });
 });
 
 // Account Deletion
-app.post('/api/auth/delete', (req, res) => {
+app.post('/api/auth/delete', async (req, res) => {
   const { password, textConfirmation } = req.body;
   if (!password || !textConfirmation) {
     return res.status(400).json({ error: 'Please submit password and typed confirmation text.' });
@@ -2433,7 +3072,7 @@ app.post('/api/auth/delete', (req, res) => {
   }
 
   if (blockedOrgs.length > 0) {
-    writeDB(db);
+    await writeDB(db);
     return res.status(400).json({
       error: `You are the last Admin of one or more organizations (${blockedOrgs.join(', ')}). Transfer admin ownership or delete/archive the organization before deleting your account.`
     });
@@ -2475,7 +3114,7 @@ app.post('/api/auth/delete', (req, res) => {
   // Eliminate primary profile
   delete db.users[userId];
 
-  writeDB(db);
+  await writeDB(db);
   res.json({ status: 'ok', message: 'Account was scrubbed and purged successfully.' });
 });
 
@@ -2501,6 +3140,32 @@ app.get('/api/transparency/:slug', (req, res) => {
   // Calculate stats
   const incomeTot = approvedTx.filter(t => t.type === 'Income').reduce((sum, t) => sum + t.amount, 0);
   const expenseTot = approvedTx.filter(t => t.type === 'Expense').reduce((sum, t) => sum + t.amount, 0);
+
+  // Fetch and construct public borrows
+  const publicBorrows = (db.borrows || [])
+    .filter(b => b.orgId === orgId && b.publicVisible);
+
+  const moneyOwedToUnion = publicBorrows
+    .filter(b => b.type === 'borrowed_from_union')
+    .reduce((sum, b) => sum + b.balanceDue, 0);
+
+  const moneyUnionOwes = publicBorrows
+    .filter(b => b.type === 'borrowed_by_union')
+    .reduce((sum, b) => sum + b.balanceDue, 0);
+
+  const publicBorrowsMapped = publicBorrows.map(b => ({
+    id: b.id,
+    type: b.type,
+    borrowerName: b.borrowerName,
+    lenderName: b.lenderName,
+    amount: b.amount,
+    amountRepaid: b.amountRepaid,
+    balanceDue: b.balanceDue,
+    purpose: b.purpose,
+    dueDate: b.dueDate,
+    status: b.status,
+    createdAt: b.createdAt
+  }));
 
   // Campaigns with contributions
   const campaignsList = db.campaigns.filter(c => c.orgId === orgId).map(c => {
@@ -2529,9 +3194,12 @@ app.get('/api/transparency/:slug', (req, res) => {
       totalIncome: incomeTot,
       totalExpense: expenseTot,
       currentBalance: incomeTot - expenseTot,
-      activeCampaignsCount: campaignsList.filter(c => c.status === 'Active').length
+      activeCampaignsCount: campaignsList.filter(c => c.status === 'Active').length,
+      moneyOwedToUnion,
+      moneyUnionOwes
     },
     campaigns: campaignsList,
+    borrows: publicBorrowsMapped,
     transactions: approvedTx.map(t => ({
       id: t.id,
       type: t.type,

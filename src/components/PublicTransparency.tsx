@@ -242,6 +242,97 @@ export function PublicTransparency({ slug, onClose }: PublicTransparencyProps) {
           )}
         </div>
 
+        {/* Public Borrow & Loan Register Panel */}
+        <div className="bg-[#161A20] border border-zinc-850 p-6 rounded-2xl space-y-4 text-left" id="public-borrows-panel">
+          <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+            <div>
+              <h3 className="font-sans font-bold text-base text-white">Borrow & Loan Register</h3>
+              <p className="text-xs text-zinc-400 mt-1">
+                Transparency tracking of public loans borrowed from the union or owed by the union, ensuring complete visual accountability of credit.
+              </p>
+            </div>
+            
+            {/* Borrow Metrics inside the panel */}
+            <div className="flex gap-4">
+              <div className="bg-[#0F1115] border border-zinc-850 px-4 py-2 rounded-xl text-xs">
+                <span className="text-[9px] font-mono text-rose-400 uppercase block">Owed to Union</span>
+                <span className="font-mono font-bold text-white mt-0.5 block">{symbol}{(metrics.moneyOwedToUnion || 0).toLocaleString()}</span>
+              </div>
+              <div className="bg-[#0F1115] border border-zinc-850 px-4 py-2 rounded-xl text-xs">
+                <span className="text-[9px] font-mono text-emerald-400 uppercase block">Union Owes</span>
+                <span className="font-mono font-bold text-white mt-0.5 block">{symbol}{(metrics.moneyUnionOwes || 0).toLocaleString()}</span>
+              </div>
+            </div>
+          </div>
+
+          {(data.borrows || []).length === 0 ? (
+            <p className="text-zinc-650 text-xs font-mono py-2 italic text-center">No public borrow or loan records reported.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-zinc-850 text-zinc-500 font-mono text-[10px] tracking-widest uppercase">
+                    <th className="pb-3 px-4">Entity / Member</th>
+                    <th className="pb-3 px-3">Type</th>
+                    <th className="pb-3 px-3">Principal</th>
+                    <th className="pb-3 px-3">Balance Due</th>
+                    <th className="pb-3 px-3">Due Date</th>
+                    <th className="pb-3 px-4 text-right">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-850/50 text-xs">
+                  {(data.borrows || []).map((b: any) => {
+                    const titleName = b.type === 'borrowed_from_union' ? b.borrowerName : b.lenderName;
+                    return (
+                      <tr key={b.id} className="hover:bg-zinc-850/20 transition-all">
+                        <td className="py-3 px-4">
+                          <div>
+                            <span className="text-white font-semibold block">{titleName}</span>
+                            <span className="text-[10px] text-zinc-500 mt-0.5">{b.purpose || 'No purpose listed.'}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-3">
+                          <span className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider ${
+                            b.type === 'borrowed_from_union' 
+                              ? 'bg-rose-950/40 text-rose-400' 
+                              : 'bg-emerald-950/40 text-emerald-400'
+                          }`}>
+                            {b.type === 'borrowed_from_union' ? 'Owed to Union' : 'Owed by Union'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 font-mono text-zinc-300">
+                          {symbol}{b.amount.toLocaleString()}
+                        </td>
+                        <td className="py-3 px-3 font-mono font-semibold text-white">
+                          {symbol}{b.balanceDue.toLocaleString()}
+                        </td>
+                        <td className="py-3 px-3 text-zinc-400 font-mono text-[11px]">
+                          {b.dueDate ? new Date(b.dueDate).toLocaleDateString() : 'No limit'}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <span className={`px-2 py-0.5 rounded text-[9px] font-mono uppercase tracking-wide font-bold border ${
+                            b.status === 'fully_paid'
+                              ? 'bg-emerald-950/40 border-emerald-800/40 text-emerald-400'
+                              : b.status === 'partially_paid'
+                              ? 'bg-indigo-950/40 border-indigo-800/40 text-indigo-400'
+                              : b.status === 'overdue'
+                              ? 'bg-rose-950/40 border-rose-800/40 text-rose-400'
+                              : b.status === 'waived'
+                              ? 'bg-zinc-800 border-zinc-700 text-zinc-400'
+                              : 'bg-amber-950/40 border-amber-800/40 text-amber-400'
+                          }`}>
+                            {b.status.replace('_', ' ')}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
         {/* Transactions ledger history table (Approved Only!) */}
         <div className="bg-[#161A20] border border-zinc-850 p-6 rounded-2xl space-y-4" id="public-ledger-grid">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">

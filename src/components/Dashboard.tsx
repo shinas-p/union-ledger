@@ -30,12 +30,13 @@ import {
   BarChart, 
   Bar 
 } from 'recharts';
-import { Transaction, Campaign, AuditLog, CURRENCY_SYMBOLS, OrganizationCurrency } from '../types';
+import { Transaction, Campaign, AuditLog, CURRENCY_SYMBOLS, OrganizationCurrency, BorrowRecord } from '../types';
 
 interface DashboardProps {
   transactions: Transaction[];
   campaigns: Campaign[];
   audits: AuditLog[];
+  borrows?: BorrowRecord[];
   currency: OrganizationCurrency;
   role: string;
   onNavigate: (tab: string) => void;
@@ -48,6 +49,7 @@ export function Dashboard({
   transactions, 
   campaigns, 
   audits, 
+  borrows = [],
   currency, 
   role,
   onNavigate,
@@ -57,6 +59,16 @@ export function Dashboard({
 }: DashboardProps) {
 
   const symbol = CURRENCY_SYMBOLS[currency] || '₹';
+
+  // Borrow Ledger KPI Calculations
+  const activeBorrows = borrows.filter(b => b.status !== 'waived');
+  const outstandingReceivable = activeBorrows
+    .filter(b => b.type === 'borrowed_from_union')
+    .reduce((sum, b) => sum + b.balanceDue, 0);
+
+  const outstandingPayable = activeBorrows
+    .filter(b => b.type === 'borrowed_by_union')
+    .reduce((sum, b) => sum + b.balanceDue, 0);
 
   // Approved totals
   const approvedTx = transactions.filter(t => t.status === 'Approved' && !t.deletedAt);
@@ -182,7 +194,7 @@ export function Dashboard({
       </div>
 
       {/* KPI Dashboard Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="kpi-cards-grid">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4" id="kpi-cards-grid">
         
         {/* Balance Card */}
         <div className="bg-[#161A20] border border-white/5 p-5 rounded-lg flex flex-col justify-between" id="kpi-balance-card">
@@ -237,6 +249,42 @@ export function Dashboard({
           <div className="flex items-center gap-1 text-[10px] font-mono text-red-400 uppercase tracking-widest">
             <span>-4.2%</span>
             <span className="text-[#A1A1AA] opacity-50 lowercase font-sans">within budget</span>
+          </div>
+        </div>
+
+        {/* Outstanding Receivable Card */}
+        <div className="bg-[#161A20] border border-white/5 p-5 rounded-lg flex flex-col justify-between cursor-pointer hover:border-brand/20 transition-all" id="kpi-receivable-card" onClick={() => onNavigate('borrows')}>
+          <div className="flex justify-between items-start">
+            <span className="text-[10px] font-mono tracking-widest text-[#A1A1AA] uppercase">Owed to Union</span>
+            <div className="p-1.5 rounded-sm bg-rose-500/10 text-rose-400">
+              <TrendingUp size={14} />
+            </div>
+          </div>
+          <div className="my-2">
+            <span className="text-2xl font-mono font-semibold text-white tracking-tight">
+              {symbol}{outstandingReceivable.toLocaleString()}
+            </span>
+          </div>
+          <div className="flex items-center gap-1 text-[10px] font-mono text-rose-400 uppercase tracking-widest">
+            <span>Receivable Bal</span>
+          </div>
+        </div>
+
+        {/* Outstanding Payable Card */}
+        <div className="bg-[#161A20] border border-white/5 p-5 rounded-lg flex flex-col justify-between cursor-pointer hover:border-brand/20 transition-all" id="kpi-payable-card" onClick={() => onNavigate('borrows')}>
+          <div className="flex justify-between items-start">
+            <span className="text-[10px] font-mono tracking-widest text-[#A1A1AA] uppercase">Union Owes</span>
+            <div className="p-1.5 rounded-sm bg-emerald-500/10 text-emerald-450">
+              <TrendingDown size={14} />
+            </div>
+          </div>
+          <div className="my-2">
+            <span className="text-2xl font-mono font-semibold text-white tracking-tight">
+              {symbol}{outstandingPayable.toLocaleString()}
+            </span>
+          </div>
+          <div className="flex items-center gap-1 text-[10px] font-mono text-emerald-400 uppercase tracking-widest">
+            <span>Payable Bal</span>
           </div>
         </div>
 
